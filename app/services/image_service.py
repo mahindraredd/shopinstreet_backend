@@ -3,10 +3,11 @@ import base64
 import uuid
 from PIL import Image, ImageEnhance, ImageOps
 import boto3
+from dotenv import load_dotenv
 from rembg import remove
 from app.core.config import Settings
 from app.utils.s3 import upload_to_s3
-
+load_dotenv()
 def clean_product_image(image_bytes: bytes) -> bytes:
     input_image = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
     no_bg = remove(input_image)
@@ -71,7 +72,7 @@ def extract_key_from_url(url: str) -> str:
 import boto3
 from botocore.exceptions import ClientError
 import os
-
+load_dotenv()
 def generate_presigned_url(object_key: str, expiration: int = 3600) -> str:
     s3 = boto3.client(
         's3',
