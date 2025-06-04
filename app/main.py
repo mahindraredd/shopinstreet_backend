@@ -6,6 +6,7 @@ from app.api.routes_vendor import router as vendor_router
 from app.api.routes_product import router as product_router
 from app.api.routes_order import router as order_router
 from fastapi.middleware.cors import CORSMiddleware
+from app.routers import users, cart
 
 
 
@@ -45,7 +46,8 @@ app.include_router(
     tags=["Order"],   
     
 )
-
+app.include_router(users.router, prefix="/users", tags=["Users"])
+app.include_router(cart.router, prefix="/cart", tags=["Cart"])
 
 
 # 👇 Add custom OpenAPI with Bearer Auth

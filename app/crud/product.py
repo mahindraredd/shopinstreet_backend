@@ -49,13 +49,30 @@ def get_product_by_id(db: Session, product_id: int) -> Optional[Product]:
     return db.query(Product).filter(Product.id == product_id).first()
 
 # ✅ Update product
+# Update the update_product function to handle pricing tiers
 def update_product(db: Session, product_id: int, vendor_id: int, data: ProductUpdate) -> Optional[Product]:
     product = db.query(Product).filter(Product.id == product_id, Product.vendor_id == vendor_id).first()
     if not product:
         return None
 
-    for key, value in data.model_dump(exclude_unset=True).items():
+    # Update simple fields
+    update_data = data.model_dump(exclude={"pricing_tiers"}, exclude_unset=True)
+    for key, value in update_data.items():
         setattr(product, key, value)
+
+    # Handle pricing tiers update if provided
+    if data.pricing_tiers is not None:
+        # Delete existing pricing tiers
+        db.query(ProductPricingTier).filter(ProductPricingTier.product_id == product_id).delete()
+        
+        # Add new pricing tiers
+        for tier in data.pricing_tiers:
+            pricing = ProductPricingTier(
+                moq=tier.moq,
+                price=tier.price,
+                product_id=product_id
+            )
+            db.add(pricing)
 
     db.commit()
     db.refresh(product)

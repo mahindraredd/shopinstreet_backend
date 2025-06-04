@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 # 👇 Reusable base schema for a pricing tier
@@ -49,6 +49,9 @@ class ProductUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     category: Optional[str] = None
-    image_urls: Optional[List[str]] = None  # Corrected to Optional[List[str]]
     stock: Optional[int] = None
     price: Optional[float] = None
+    pricing_tiers: Optional[List[Dict[str, Any]]] = None
+    image_urls: Optional[List[str]] = None
+    class Config:
+        from_attributes = True

@@ -1,7 +1,7 @@
 import json
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from fastapi import Query
 
 from app.schemas.product import ProductCreate, ProductOut
@@ -128,17 +128,146 @@ def get_product_by_id_route(
         raise HTTPException(status_code=404, detail="Product not found")
     return product
 
-@router.patch("/{product_id}", response_model=ProductOut)
-def update_product_route(
+@router.post("/{product_id}/images", response_model=ProductOut)
+async def update_product_images(
     product_id: int,
-    data: ProductUpdate,
+    images: List[UploadFile] = File(...),  # Make this required for this endpoint
     db: Session = Depends(get_db),
     vendor: Vendor = Depends(get_current_vendor)
 ):
-    updated = crud_product.update_product(db, product_id, vendor.id, data)
-    if not updated:
-        raise HTTPException(status_code=404, detail="Product not found or unauthorized")
-    return updated
+    """
+    Update only the product images.
+    """
+    try:
+        # Check if product exists and belongs to vendor
+        existing_product = crud_product.get_product_by_id(db, product_id)
+        if not existing_product or existing_product.vendor_id != vendor.id:
+            raise HTTPException(
+                status_code=404, 
+                detail="Product not found or you don't have permission to update it"
+            )
+        
+        # Process images
+        image_urls = []
+        for img in images:
+            if img.filename:  # Only process files that were actually uploaded
+                content = await img.read()
+                cleaned_image = await process_and_upload_images1(content, vendor.id)
+                if not isinstance(cleaned_image, str):
+                    raise ValueError("Image processing failed. Expected a URL string.")
+                image_urls.append(cleaned_image)
+        
+        # Check if we got any valid images
+        if not image_urls:
+            raise HTTPException(
+                status_code=400, 
+                detail="No valid images provided"
+            )
+        
+        # Update just the images using your existing function
+        updated_product = crud_product.update_product_images(db, product_id, image_urls)
+        
+        # Generate presigned URLs for the response
+        if updated_product and updated_product.image_urls:
+            updated_product.image_urls = [
+                generate_presigned_url(key) for key in updated_product.image_urls
+            ]
+            
+        return updated_product
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error updating product images: {str(e)}")
+        print(f"Error details: {error_details}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.patch("/{product_id}/details", response_model=ProductOut)
+async def update_product_details(
+    product_id: int,
+    name: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    category: Optional[str] = Form(None),
+    stock: Optional[int] = Form(None),
+    price: Optional[float] = Form(None),
+    pricing_tiers: Optional[str] = Form(None),  # received as stringified JSON
+    db: Session = Depends(get_db),
+    vendor: Vendor = Depends(get_current_vendor)    
+):
+    """
+    Update product details excluding images.
+    """
+    try:
+        existing_product = crud_product.get_product_by_id(db, product_id)
+        if not existing_product or existing_product.vendor_id != vendor.id:
+            raise HTTPException(status_code=404, detail="Product not found or unauthorized")
+             
+        # Prepare update data
+        update_data = {}
+        
+        # Add fields that are provided
+        if name is not None:
+            update_data["name"] = name
+        if description is not None:
+            update_data["description"] = description
+        if category is not None:
+            update_data["category"] = category
+        if stock is not None:
+            update_data["stock"] = stock
+        if price is not None:
+            update_data["price"] = price
+            
+        # Handle pricing_tiers if provided
+        if pricing_tiers is not None:
+            try:
+                parsed_pricing_tiers = json.loads(pricing_tiers)
+                # Validate pricing_tiers format
+                if not isinstance(parsed_pricing_tiers, list):
+                    raise ValueError("pricing_tiers must be a list of objects")
+                update_data["pricing_tiers"] = parsed_pricing_tiers
+                
+                # Update price from first tier if provided
+                if parsed_pricing_tiers and not price:
+                    update_data["price"] = parsed_pricing_tiers[0].get("price")
+            except json.JSONDecodeError:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Invalid JSON format for pricing_tiers"
+                )
+        
+        # If no fields to update, return early
+        if not update_data:
+            raise HTTPException(
+                status_code=400, 
+                detail="No fields provided for update"
+            )
+        
+        # Create ProductUpdate schema from update_data
+        product_update = ProductUpdate(**update_data)
+        
+        # Update the product
+        updated_product = crud_product.update_product(db, product_id, vendor.id, product_update)
+        if not updated_product:
+            raise HTTPException(
+                status_code=404, 
+                detail="Product update failed"
+            )
+        
+        # Generate presigned URLs for images
+        if updated_product.image_urls:
+            updated_product.image_urls = [
+                generate_presigned_url(key) for key in updated_product.image_urls
+            ]
+        
+        return updated_product
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error updating product details: {str(e)}")
+        print(f"Error details: {error_details}")
+        raise HTTPException(status_code=400, detail=str(e))
+    
 
 @router.delete("/{product_id}", status_code=204)
 def delete_product_route(

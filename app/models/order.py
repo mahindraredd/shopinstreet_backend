@@ -5,10 +5,10 @@ from app.db.session import Base
 import enum
 
 class OrderStatus(str, enum.Enum):
-    pending = "Pending"
-    processing = "Processing"
-    shipped = "Shipped"
-    delivered = "Delivered"
+    Pending = "Pending"
+    Processing = "Processing"
+    Shipped = "Shipped"
+    Delivered = "Delivered"
 
 class Order(Base):
     __tablename__ = "orders"
@@ -19,7 +19,7 @@ class Order(Base):
     customer_phone = Column(String, nullable=True)
     shipping_address = Column(String, nullable=False)
     total_amount = Column(Float, nullable=False)
-    status = Column(Enum(OrderStatus), default=OrderStatus.pending)
+    status = Column(Enum(OrderStatus), default=OrderStatus.Pending)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     vendor_id = Column(Integer, ForeignKey("vendor.id"))
