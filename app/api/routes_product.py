@@ -128,15 +128,18 @@ def get_product_by_id_route(
         raise HTTPException(status_code=404, detail="Product not found")
     return product
 
+# Replace your update_product_images endpoint in app/api/routes_product.py with this improved version:
+
 @router.post("/{product_id}/images", response_model=ProductOut)
 async def update_product_images(
     product_id: int,
-    images: List[UploadFile] = File(...),  # Make this required for this endpoint
+    images: List[UploadFile] = File(...),  # New images to upload
+    existing_images: Optional[str] = Form(None),  # JSON string of existing images to keep
     db: Session = Depends(get_db),
     vendor: Vendor = Depends(get_current_vendor)
 ):
     """
-    Update only the product images.
+    Update product images: keeps existing images + adds new uploads
     """
     try:
         # Check if product exists and belongs to vendor
@@ -147,41 +150,90 @@ async def update_product_images(
                 detail="Product not found or you don't have permission to update it"
             )
         
-        # Process images
-        image_urls = []
-        for img in images:
-            if img.filename:  # Only process files that were actually uploaded
-                content = await img.read()
-                cleaned_image = await process_and_upload_images1(content, vendor.id)
-                if not isinstance(cleaned_image, str):
-                    raise ValueError("Image processing failed. Expected a URL string.")
-                image_urls.append(cleaned_image)
+        print(f"🔄 Updating images for product {product_id}")
+        print(f"📁 Received {len(images)} files")
+        print(f"📋 Existing images data: {existing_images}")
         
-        # Check if we got any valid images
-        if not image_urls:
+        # Parse existing images to keep
+        existing_image_urls = []
+        if existing_images:
+            try:
+                existing_image_urls = json.loads(existing_images)
+                print(f"📷 Keeping {len(existing_image_urls)} existing images")
+            except json.JSONDecodeError:
+                print("⚠️ Failed to parse existing_images JSON, assuming no existing images")
+        
+        # Process new image uploads (filter out dummy files)
+        new_image_urls = []
+        for img in images:
+            # Skip dummy files (empty files or specific dummy names)
+            if (img.filename and 
+                img.filename != 'dummy.txt' and 
+                img.size > 0):
+                
+                print(f"📤 Processing new image: {img.filename} ({img.size} bytes)")
+                content = await img.read()
+                
+                # Skip if content is empty
+                if len(content) == 0:
+                    print(f"⚠️ Skipping empty file: {img.filename}")
+                    continue
+                    
+                try:
+                    cleaned_image = await process_and_upload_images1(content, vendor.id)
+                    if not isinstance(cleaned_image, str):
+                        raise ValueError("Image processing failed. Expected a URL string.")
+                    new_image_urls.append(cleaned_image)
+                    print(f"✅ Successfully processed: {img.filename}")
+                except Exception as e:
+                    print(f"❌ Failed to process {img.filename}: {str(e)}")
+                    continue
+            else:
+                print(f"⏭️ Skipping file: {img.filename} (dummy or empty)")
+        
+        print(f"✅ Successfully uploaded {len(new_image_urls)} new images")
+        
+        # Combine existing + new images
+        all_image_urls = existing_image_urls + new_image_urls
+        print(f"📊 Total images after update: {len(all_image_urls)}")
+        
+        # Validate total image count
+        if len(all_image_urls) > 6:
             raise HTTPException(
                 status_code=400, 
-                detail="No valid images provided"
+                detail=f"Too many images. Maximum 6 allowed, got {len(all_image_urls)}"
             )
         
-        # Update just the images using your existing function
-        updated_product = crud_product.update_product_images(db, product_id, image_urls)
+        if len(all_image_urls) == 0:
+            raise HTTPException(
+                status_code=400, 
+                detail="At least one image is required"
+            )
+        
+        # Update the product with all images
+        updated_product = crud_product.update_product_images(db, product_id, all_image_urls)
+        if not updated_product:
+            raise HTTPException(status_code=404, detail="Failed to update product images")
         
         # Generate presigned URLs for the response
-        if updated_product and updated_product.image_urls:
+        if updated_product.image_urls:
             updated_product.image_urls = [
                 generate_presigned_url(key) for key in updated_product.image_urls
             ]
-            
+        
+        print(f"🎉 Successfully updated product {product_id} with {len(all_image_urls)} images")
         return updated_product
         
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        print(f"Error updating product images: {str(e)}")
+        print(f"❌ Error updating product images: {str(e)}")
         print(f"Error details: {error_details}")
         raise HTTPException(status_code=400, detail=str(e))
-
+    
 @router.patch("/{product_id}/details", response_model=ProductOut)
 async def update_product_details(
     product_id: int,
