@@ -50,6 +50,8 @@ def get_product_by_id(db: Session, product_id: int) -> Optional[Product]:
 
 # ✅ Update product
 # Update the update_product function to handle pricing tiers
+# Replace the update_product function in app/crud/product.py with this:
+
 def update_product(db: Session, product_id: int, vendor_id: int, data: ProductUpdate) -> Optional[Product]:
     product = db.query(Product).filter(Product.id == product_id, Product.vendor_id == vendor_id).first()
     if not product:
@@ -67,9 +69,36 @@ def update_product(db: Session, product_id: int, vendor_id: int, data: ProductUp
         
         # Add new pricing tiers
         for tier in data.pricing_tiers:
+            # Handle both dictionary and object access safely
+            if isinstance(tier, dict):
+                moq_value = tier.get("moq")
+                price_value = tier.get("price")
+            else:
+                moq_value = getattr(tier, "moq", None)
+                price_value = getattr(tier, "price", None)
+            
+            # Validate required values
+            if moq_value is None:
+                raise ValueError(f"Missing 'moq' in pricing tier: {tier}")
+            if price_value is None:
+                raise ValueError(f"Missing 'price' in pricing tier: {tier}")
+            
+            # Convert and validate types
+            try:
+                moq_int = int(moq_value)
+                price_float = float(price_value)
+            except (ValueError, TypeError) as e:
+                raise ValueError(f"Invalid pricing tier values - moq: {moq_value}, price: {price_value}. Error: {e}")
+            
+            # Business validation
+            if moq_int <= 0:
+                raise ValueError(f"MOQ must be greater than 0, got: {moq_int}")
+            if price_float <= 0:
+                raise ValueError(f"Price must be greater than 0, got: {price_float}")
+            
             pricing = ProductPricingTier(
-                moq=tier.moq,
-                price=tier.price,
+                moq=moq_int,
+                price=price_float,
                 product_id=product_id
             )
             db.add(pricing)
@@ -77,7 +106,6 @@ def update_product(db: Session, product_id: int, vendor_id: int, data: ProductUp
     db.commit()
     db.refresh(product)
     return product
-
 # ✅ Delete product
 def delete_product(db: Session, product_id: int, vendor_id: int) -> bool:
     product = db.query(Product).filter(Product.id == product_id, Product.vendor_id == vendor_id).first()

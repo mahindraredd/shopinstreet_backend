@@ -31,12 +31,14 @@ class OrderItem(Base):
     __tablename__ = "order_items"
 
     id = Column(Integer, primary_key=True, index=True)
-    product_id = Column(Integer)
-    product_name = Column(String)
-    quantity = Column(Integer)
-    price = Column(Float)
+    product_id = Column(Integer, nullable=False)
+    product_name = Column(String, nullable=False)
+    quantity = Column(Integer, nullable=False)
+    price = Column(Float, nullable=False)
 
+    vendor_id = Column(Integer, ForeignKey("vendor.id"))  # <- Add this line
     order_id = Column(Integer, ForeignKey("orders.id"))
-    order = relationship("Order", back_populates="order_items")
 
+    order = relationship("Order", back_populates="order_items")
+    vendor = relationship("Vendor")  # Optional: Only if you want to access vendor directly from order item
 

@@ -34,4 +34,4 @@ class OrderStatusUpdate(BaseModel):
     status: str  # e.g., "pending", "processing", "shipped", "delivered"
 
     class Config:
-        orm_mode = True
+        from_attributes = True
