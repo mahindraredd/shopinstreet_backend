@@ -1,11 +1,11 @@
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-
-from app.schemas.vendor import VendorRegister, VendorLogin
+from app.db.deps import get_db, get_current_vendor
+from app.schemas.vendor import VendorRegister, VendorLogin, VendorOut  # Import VendorOut
+from app.crud import vendor as crud_vendor
 from app.models.vendor import Vendor
 from app.core.security import create_access_token, hash_password, verify_password
-from app.db.deps import get_db
-from app.crud import vendor as crud_vendor
 
 router = APIRouter()
 
@@ -54,9 +54,16 @@ def login_vendor(data: VendorLogin, db: Session = Depends(get_db)):
         "is_verified": vendor.is_verified
     }
 
-
+# ✅ NEW: Get vendor profile endpoint
+@router.get("/profile", response_model=VendorOut)
+def get_vendor_profile(
+    db: Session = Depends(get_db),
+    vendor: Vendor = Depends(get_current_vendor)
+):
+    """Get current vendor's profile information including address"""
+    return vendor
 
 @router.get("/test")
 def test():
-    """Test endpoint to verify product route is working"""
-    return {"message": "Product route is working"}
+    """Test endpoint to verify vendor route is working"""
+    return {"message": "Vendor route is working"}
