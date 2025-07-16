@@ -26,15 +26,24 @@ class VendorLogin(BaseModel):
     email: EmailStr
     password: str
 
-# ✅ Optional: Response schema
+# ✅ UPDATED: Complete vendor response schema with address fields
 class VendorOut(BaseModel):
     id: int
     email: EmailStr
     business_name: str
+    business_category: str
+    address: str
+    city: str
+    state: str
+    pincode: str
+    country: str
+    owner_name: str
+    phone: str
+    website_url: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    business_logo: Optional[str] = None
     is_verified: bool
     created_at: datetime
 
     class Config:
         from_attributes = True  # ✅ Pydantic v2 format
-
-
