@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes_vendor_store import router as vendor_store_router
 from app.routers import users, cart
 
+from app.api.routes_ai import router as ai_router
 
 
 app = FastAPI(
@@ -47,6 +48,15 @@ app.include_router(
     tags=["Order"],   
     
 )
+
+
+
+app.include_router(
+    ai_router,
+    prefix="/api/ai",
+    tags=["AI Product Extraction"]
+)
+
 app.include_router(users.router, prefix="/users", tags=["Users"])
 app.include_router(cart.router, prefix="/cart", tags=["Cart"])
 app.include_router(vendor_store_router, prefix="/api")
