@@ -25,7 +25,8 @@ router = APIRouter()
 def test():
     return {"message": "Product route is working"}
 
-#  Create product
+# app/api/routes_product.py - Replace your BROKEN create product endpoint
+
 @router.post("/", response_model=ProductOut, status_code=status.HTTP_201_CREATED)
 async def create_product_route(
     name: str = Form(...),
@@ -40,40 +41,69 @@ async def create_product_route(
 ):
     """
     Create a new product for the current logged-in vendor.
+    FIXED: Now returns presigned URLs instead of S3 keys
     """
     try:
+        print(f"🏪 Creating product for vendor {vendor.id}: {name}")
+        
         # Parse pricing_tiers JSON
-        pricing_tiers = json.loads(pricing_tiers)
+        pricing_tiers_data = json.loads(pricing_tiers)
+        print(f"📊 Pricing tiers: {pricing_tiers_data}")
 
         # Validate pricing_tiers format
-        if not isinstance(pricing_tiers, list):
+        if not isinstance(pricing_tiers_data, list):
             raise ValueError("pricing_tiers must be a list of objects")
 
-        # Upload images to S3
-        image_urls = []  # Placeholder for image URLs
-        for img in images:
+        # Upload images to S3 and get S3 keys
+        print(f"📸 Processing {len(images)} images...")
+        image_keys = []  # These will be S3 keys, not URLs
+        
+        for i, img in enumerate(images):
+            print(f"📸 Processing image {i+1}/{len(images)}: {img.filename}")
             content = await img.read()
-            cleaned_image = await process_and_upload_images1(content, vendor.id)
-            if not isinstance(cleaned_image, str):
-                raise ValueError("Image processing failed. Expected a URL string.")
-            image_urls.append(cleaned_image)
+            s3_key = await process_and_upload_images1(content, vendor.id)
+            if not isinstance(s3_key, str):
+                raise ValueError(f"Image {i+1} processing failed. Expected S3 key string.")
+            image_keys.append(s3_key)
+            print(f"✅ Image {i+1} uploaded with key: {s3_key}")
 
-        # Create ProductCreate schema
+        print(f"✅ All images uploaded. Keys: {image_keys}")
+
+        # Create ProductCreate object with S3 keys (for database storage)
         product_data = ProductCreate(
             name=name,
             description=description,
             category=category,
             stock=stock,
             price=price,
-            pricing_tiers=pricing_tiers,
-            image_urls=image_urls,
+            image_urls=image_keys,  # Store S3 keys in database
+            pricing_tiers=pricing_tiers_data
         )
 
-        # Save to DB
+        # Save product to database
+        print(f"💾 Saving product to database...")
         created_product = crud_product.create_product(db=db, data=product_data, vendor_id=vendor.id)
+        print(f"✅ Product saved with ID: {created_product.id}")
+        
+        # 🔧 CRITICAL FIX: Generate presigned URLs for the response
+        print(f"🔗 Generating presigned URLs for response...")
+        presigned_urls = []
+        
+        if created_product.image_urls:
+            for key in created_product.image_urls:
+                try:
+                    if key and isinstance(key, str):
+                        url = generate_presigned_url(key)
+                        presigned_urls.append(url)
+                        print(f"✅ Generated presigned URL for key: {key}")
+                except Exception as e:
+                    print(f"❌ Failed to generate URL for key {key}: {e}")
+                    continue
+        
+        print(f"✅ Generated {len(presigned_urls)} presigned URLs")
 
-        # Return the created product
-        return ProductOut(
+        # 🔧 FIXED: Return ProductOut with presigned URLs
+        product_response = ProductOut(
             id=created_product.id,
             vendor_id=created_product.vendor_id,
             name=created_product.name,
@@ -82,14 +112,24 @@ async def create_product_route(
             stock=created_product.stock,
             price=created_product.price,
             pricing_tiers=created_product.pricing_tiers,
-            image_urls=created_product.image_urls,
+            image_urls=presigned_urls,  # 🔧 FIXED: Return presigned URLs, not S3 keys
             created_at=created_product.created_at,
         )
 
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        print(f"🎉 Product creation completed successfully!")
+        print(f"📷 Returning {len(presigned_urls)} presigned URLs to frontend")
+        
+        return product_response
 
+    except json.JSONDecodeError:
+        print(f"❌ Invalid JSON format for pricing_tiers")
+        raise HTTPException(status_code=400, detail="Invalid JSON format for pricing_tiers")
+    except Exception as e:
+        print(f"❌ Error creating product: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
 #  List current vendor's products
+# app/api/routes_product.py - Fixed /mine endpoint
+
 @router.get("/mine", response_model=List[ProductOut])
 def list_my_products(
     page: int = 1,
@@ -99,19 +139,102 @@ def list_my_products(
 ):
     """
     List paginated products belonging to the logged-in vendor.
+    FIXED: Now properly returns ProductOut objects with presigned URLs
     """
     skip = (page - 1) * size
     products = crud_product.get_products_by_vendor(db, vendor.id, skip=skip, limit=size)
 
-    # 👇 Inject presigned URLs for each product's images
-    for product in products:
-        product.image_urls = [
-            generate_presigned_url(key) for key in product.image_urls
-        ]
-    print(f"products: {products}")
+    print(f"📋 Found {len(products)} products for vendor {vendor.id}")
     
-    return products
+    # 🔧 FIXED: Create proper ProductOut responses instead of modifying SQLAlchemy objects
+    products_with_urls = []
+    for product in products:
+        try:
+            # Generate presigned URLs for this product
+            print(f"🔗 Generating presigned URLs for product {product.id}")
+            presigned_urls = []
+            
+            if product.image_urls:
+                for key in product.image_urls:
+                    try:
+                        if key and isinstance(key, str):
+                            url = generate_presigned_url(key)
+                            presigned_urls.append(url)
+                            print(f"✅ Generated URL for key: {key[:50]}...")
+                    except Exception as e:
+                        print(f"❌ Failed to generate URL for key {key}: {e}")
+                        continue
+            
+            # Create proper ProductOut response
+            product_response = ProductOut(
+                id=product.id,
+                name=product.name,
+                description=product.description,
+                category=product.category,
+                stock=product.stock,
+                price=product.price,
+                image_urls=presigned_urls,  # 🔧 FIXED: Presigned URLs, not S3 keys
+                vendor_id=product.vendor_id,
+                created_at=product.created_at,
+                pricing_tiers=product.pricing_tiers or []
+            )
+            
+            products_with_urls.append(product_response)
+            print(f"✅ Added product {product.id} with {len(presigned_urls)} presigned URLs")
+            
+        except Exception as e:
+            print(f"❌ Error processing product {product.id}: {e}")
+            # Skip this product rather than failing the whole request
+            continue
+    
+    print(f"✅ Returning {len(products_with_urls)} products with presigned URLs")
+    return products_with_urls
 
+
+# Alternative simpler version using get_presigned_urls_for_product if you have it:
+@router.get("/mine-simple", response_model=List[ProductOut])
+def list_my_products_simple(
+    page: int = 1,
+    size: int = 10,
+    db: Session = Depends(get_db),
+    vendor: Vendor = Depends(get_current_vendor)
+):
+    """
+    Alternative simpler version using get_presigned_urls_for_product
+    """
+    skip = (page - 1) * size
+    products = crud_product.get_products_by_vendor(db, vendor.id, skip=skip, limit=size)
+
+    print(f"📋 Found {len(products)} products for vendor {vendor.id}")
+    
+    # Create proper ProductOut responses
+    products_with_urls = []
+    for product in products:
+        try:
+            # Use the helper function if you have it
+            presigned_urls = get_presigned_urls_for_product(product.image_urls)
+            
+            product_response = ProductOut(
+                id=product.id,
+                name=product.name,
+                description=product.description,
+                category=product.category,
+                stock=product.stock,
+                price=product.price,
+                image_urls=presigned_urls,  # Presigned URLs
+                vendor_id=product.vendor_id,
+                created_at=product.created_at,
+                pricing_tiers=product.pricing_tiers or []
+            )
+            
+            products_with_urls.append(product_response)
+            
+        except Exception as e:
+            print(f"❌ Error processing product {product.id}: {e}")
+            continue
+    
+    print(f"✅ Returning {len(products_with_urls)} products with presigned URLs")
+    return products_with_urls
 #  Optional: List all products from all vendors
 @router.get("/all", response_model=List[ProductOut])
 def list_all_products(db: Session = Depends(get_db)):

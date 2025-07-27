@@ -195,6 +195,7 @@ async def process_and_upload_images(files, vendor_id: int, product_id: int):
 
     return uploaded_keys
 
+
 def get_presigned_urls_for_product(image_keys: list, expiration: int = 3600) -> list:
     """Convert list of S3 keys to presigned URLs"""
     presigned_urls = []
@@ -219,7 +220,6 @@ def get_presigned_urls_for_product(image_keys: list, expiration: int = 3600) -> 
     
     print(f"✅ Successfully generated {len(presigned_urls)} presigned URLs")
     return presigned_urls
-
 def extract_key_from_url(url: str) -> str:
     """Extract S3 key from full S3 URL"""
     parsed_url = urlparse(url.split('?')[0])
