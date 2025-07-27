@@ -1,3 +1,4 @@
+
 import json
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
@@ -9,8 +10,14 @@ from app.crud import product as crud_product
 from app.db.deps import get_db, get_current_vendor
 from app.models.vendor import Vendor
 from app.schemas.product import ProductUpdate
-from app.services.image_service import generate_presigned_url, process_and_upload_images, process_and_upload_images1
-
+from app.services.image_service import (
+    generate_presigned_url, 
+    process_and_upload_images, 
+    process_and_upload_images1,
+    get_presigned_urls_for_product,
+    extract_s3_key_from_presigned_url,  
+    generate_presigned_url_safe  
+)
 router = APIRouter()
 
 # 🔹 Test route
@@ -18,7 +25,7 @@ router = APIRouter()
 def test():
     return {"message": "Product route is working"}
 
-# ✅ Create product
+#  Create product
 @router.post("/", response_model=ProductOut, status_code=status.HTTP_201_CREATED)
 async def create_product_route(
     name: str = Form(...),
@@ -82,7 +89,7 @@ async def create_product_route(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-# ✅ List current vendor's products
+#  List current vendor's products
 @router.get("/mine", response_model=List[ProductOut])
 def list_my_products(
     page: int = 1,
@@ -105,7 +112,7 @@ def list_my_products(
     
     return products
 
-# ✅ Optional: List all products from all vendors
+#  Optional: List all products from all vendors
 @router.get("/all", response_model=List[ProductOut])
 def list_all_products(db: Session = Depends(get_db)):
     """
@@ -128,18 +135,22 @@ def get_product_by_id_route(
         raise HTTPException(status_code=404, detail="Product not found")
     return product
 
-# Replace your update_product_images endpoint in app/api/routes_product.py with this improved version:
 
 @router.post("/{product_id}/images", response_model=ProductOut)
 async def update_product_images(
     product_id: int,
     images: List[UploadFile] = File(...),  # New images to upload
-    existing_images: Optional[str] = Form(None),  # JSON string of existing images to keep
+    existing_images: Optional[str] = Form(None),  # JSON string of existing images (presigned URLs)
     db: Session = Depends(get_db),
     vendor: Vendor = Depends(get_current_vendor)
 ):
     """
     Update product images: keeps existing images + adds new uploads
+    
+    Args:
+        product_id: ID of the product to update
+        images: New image files to upload
+        existing_images: JSON string of existing image URLs to keep (presigned URLs)
     """
     try:
         # Check if product exists and belongs to vendor
@@ -151,27 +162,39 @@ async def update_product_images(
             )
         
         print(f"🔄 Updating images for product {product_id}")
-        print(f"📁 Received {len(images)} files")
+        print(f"📁 Received {len(images)} new files")
         print(f"📋 Existing images data: {existing_images}")
         
-        # Parse existing images to keep
-        existing_image_urls = []
+        # Parse and convert existing images from presigned URLs to S3 keys
+        existing_image_keys = []
         if existing_images:
             try:
-                existing_image_urls = json.loads(existing_images)
-                print(f"📷 Keeping {len(existing_image_urls)} existing images")
+                existing_presigned_urls = json.loads(existing_images)
+                print(f"📷 Processing {len(existing_presigned_urls)} existing images")
+                
+                for url in existing_presigned_urls:
+                    try:
+                        s3_key = extract_s3_key_from_presigned_url(url)
+                        existing_image_keys.append(s3_key)
+                        print(f"✅ Converted URL to key: {s3_key}")
+                    except ValueError as e:
+                        print(f"⚠️ Skipping invalid URL: {url} - {e}")
+                        continue
+                        
             except json.JSONDecodeError:
                 print("⚠️ Failed to parse existing_images JSON, assuming no existing images")
         
+        print(f"📷 Keeping {len(existing_image_keys)} existing images as S3 keys")
+        
         # Process new image uploads (filter out dummy files)
-        new_image_urls = []
-        for img in images:
+        new_image_keys = []
+        for i, img in enumerate(images):
             # Skip dummy files (empty files or specific dummy names)
             if (img.filename and 
                 img.filename != 'dummy.txt' and 
                 img.size > 0):
                 
-                print(f"📤 Processing new image: {img.filename} ({img.size} bytes)")
+                print(f"📤 Processing new image {i+1}: {img.filename} ({img.size} bytes)")
                 content = await img.read()
                 
                 # Skip if content is empty
@@ -180,48 +203,51 @@ async def update_product_images(
                     continue
                     
                 try:
-                    cleaned_image = await process_and_upload_images1(content, vendor.id)
-                    if not isinstance(cleaned_image, str):
-                        raise ValueError("Image processing failed. Expected a URL string.")
-                    new_image_urls.append(cleaned_image)
-                    print(f"✅ Successfully processed: {img.filename}")
+                    s3_key = await process_and_upload_images1(content, vendor.id)
+                    if not isinstance(s3_key, str):
+                        raise ValueError("Image processing failed. Expected S3 key string.")
+                    new_image_keys.append(s3_key)
+                    print(f"✅ Successfully processed: {img.filename} -> {s3_key}")
                 except Exception as e:
                     print(f"❌ Failed to process {img.filename}: {str(e)}")
                     continue
             else:
                 print(f"⏭️ Skipping file: {img.filename} (dummy or empty)")
         
-        print(f"✅ Successfully uploaded {len(new_image_urls)} new images")
+        print(f"✅ Successfully uploaded {len(new_image_keys)} new images")
         
-        # Combine existing + new images
-        all_image_urls = existing_image_urls + new_image_urls
-        print(f"📊 Total images after update: {len(all_image_urls)}")
+        # Combine existing S3 keys + new S3 keys
+        all_image_keys = existing_image_keys + new_image_keys
+        print(f"📊 Total images after update: {len(all_image_keys)} S3 keys")
+        print(f"🔑 Final S3 keys: {all_image_keys}")
         
         # Validate total image count
-        if len(all_image_urls) > 6:
+        if len(all_image_keys) > 6:
             raise HTTPException(
                 status_code=400, 
-                detail=f"Too many images. Maximum 6 allowed, got {len(all_image_urls)}"
+                detail=f"Too many images. Maximum 6 allowed, got {len(all_image_keys)}"
             )
         
-        if len(all_image_urls) == 0:
+        if len(all_image_keys) == 0:
             raise HTTPException(
                 status_code=400, 
                 detail="At least one image is required"
             )
         
-        # Update the product with all images
-        updated_product = crud_product.update_product_images(db, product_id, all_image_urls)
+        # Update the product with all S3 keys (not URLs)
+        updated_product = crud_product.update_product_images(db, product_id, all_image_keys)
         if not updated_product:
             raise HTTPException(status_code=404, detail="Failed to update product images")
         
-        # Generate presigned URLs for the response
+        # Generate presigned URLs for the response (convert S3 keys back to URLs)
         if updated_product.image_urls:
-            updated_product.image_urls = [
+            presigned_urls = [
                 generate_presigned_url(key) for key in updated_product.image_urls
             ]
+            updated_product.image_urls = presigned_urls
+            print(f"🔗 Generated {len(presigned_urls)} presigned URLs for response")
         
-        print(f"🎉 Successfully updated product {product_id} with {len(all_image_urls)} images")
+        print(f"🎉 Successfully updated product {product_id} with {len(all_image_keys)} images")
         return updated_product
         
     except HTTPException:
@@ -230,10 +256,9 @@ async def update_product_images(
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        print(f"❌ Error updating product images: {str(e)}")
+        print(f" Error updating product images: {str(e)}")
         print(f"Error details: {error_details}")
-        raise HTTPException(status_code=400, detail=str(e))
-    
+        raise HTTPException(status_code=500, detail=f"Failed to update images: {str(e)}")    
 @router.patch("/{product_id}/details", response_model=ProductOut)
 async def update_product_details(
     product_id: int,

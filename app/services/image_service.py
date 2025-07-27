@@ -1,17 +1,17 @@
-# Updated app/services/image_service.py
+# app/services/image_service.py - Complete working version
 
 import io
 import base64
 import uuid
 import os
-from PIL import Image, ImageEnhance, ImageOps
+import re
 import boto3
+from PIL import Image, ImageEnhance, ImageOps
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 from rembg import remove
-from app.core.config import settings
-from app.utils.s3 import upload_to_s3
-from urllib.parse import urlparse, parse_qs
+from typing import List
+from urllib.parse import urlparse
 
 load_dotenv()
 
@@ -54,6 +54,72 @@ def generate_presigned_url(object_key: str, expiration: int = 3600) -> str:
     except ClientError as e:
         print(f" Failed to generate presigned URL: {e}")
         raise Exception(f"Failed to generate presigned URL: {e}")
+
+def extract_s3_key_from_presigned_url(presigned_url: str) -> str:
+    """
+    Extract S3 key from presigned URL safely
+    Handles both presigned URLs and direct S3 keys
+    """
+    try:
+        # If it's already an S3 key (no https://), return as-is
+        if not presigned_url.startswith('http'):
+            return presigned_url
+        
+        # Remove query parameters (everything after ?)
+        url_without_params = presigned_url.split('?')[0]
+        
+        # Parse URL to extract path
+        parsed_url = urlparse(url_without_params)
+        
+        # Extract the S3 key (remove leading slash)
+        s3_key = parsed_url.path.lstrip('/')
+        
+        if not s3_key:
+            raise ValueError(f"Empty S3 key extracted from URL: {presigned_url}")
+            
+        return s3_key
+        
+    except Exception as e:
+        print(f"❌ Error extracting S3 key from {presigned_url}: {e}")
+        raise ValueError(f"Invalid image URL format: {presigned_url}")
+
+def validate_s3_key_exists(s3_key: str) -> bool:
+    """
+    Check if an S3 object exists before generating presigned URL
+    """
+    try:
+        s3 = boto3.client(
+            's3',
+            aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+            region_name="us-east-2"
+        )
+        
+        s3.head_object(Bucket="shopinstreet-vendor-product-images", Key=s3_key)
+        return True
+        
+    except Exception as e:
+        print(f"⚠️ S3 key does not exist: {s3_key} - {e}")
+        return False
+
+def generate_presigned_url_safe(s3_key: str) -> str:
+    """
+    Generate presigned URL with validation
+    Returns a placeholder if the S3 object doesn't exist
+    """
+    try:
+        # For now, skip validation to avoid extra API calls
+        # You can uncomment the validation below if needed
+        # if not validate_s3_key_exists(s3_key):
+        #     print(f"⚠️ S3 object not found: {s3_key}, returning placeholder")
+        #     return f"https://via.placeholder.com/400x300?text=Image+Not+Found"
+        
+        # Generate presigned URL
+        return generate_presigned_url(s3_key)
+        
+    except Exception as e:
+        print(f"❌ Error generating presigned URL for {s3_key}: {e}")
+        return f"https://via.placeholder.com/400x300?text=Error+Loading+Image"
 
 async def process_and_upload_images1(content: bytes, vendor_id: int) -> str:
     """
@@ -156,8 +222,7 @@ def get_presigned_urls_for_product(image_keys: list, expiration: int = 3600) -> 
 
 def extract_key_from_url(url: str) -> str:
     """Extract S3 key from full S3 URL"""
-    parsed_url = urlparse(url)
-    bucket_name = parsed_url.netloc.split('.')[0]
+    parsed_url = urlparse(url.split('?')[0])
     key = parsed_url.path.lstrip('/')
     return key
 
