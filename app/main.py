@@ -8,8 +8,10 @@ from app.api.routes_order import router as order_router
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes_vendor_store import router as vendor_store_router
 from app.routers import users, cart
-
+from app.api.routes_analytics import router as analytics_router
 from app.api.routes_ai import router as ai_router
+from app.core.database_optimizer import create_enterprise_indexes
+from app.db.session import SessionLocal
 
 
 app = FastAPI(
@@ -50,6 +52,12 @@ app.include_router(
 )
 
 
+app.include_router(
+    analytics_router,
+    prefix="/api/analytics", 
+    tags=["Analytics"]
+)
+
 
 app.include_router(
     ai_router,
@@ -61,6 +69,14 @@ app.include_router(users.router, prefix="/users", tags=["Users"])
 app.include_router(cart.router, prefix="/cart", tags=["Cart"])
 app.include_router(vendor_store_router, prefix="/api")
 
+def create_indexes():
+    db = SessionLocal()
+    try:
+        create_enterprise_indexes(db)
+    finally:
+        db.close()
+
+create_indexes()
 
 # 👇 Add custom OpenAPI with Bearer Auth
 def custom_openapi():
