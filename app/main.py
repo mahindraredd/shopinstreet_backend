@@ -14,6 +14,9 @@ from app.api.routes_ai import router as ai_router
 from app.api import routes_business_profile  # 👈 NEW: Business Profile import
 from app.core.database_optimizer import create_enterprise_indexes
 from app.db.session import SessionLocal
+from app.api.routes_domain import router as domain_router
+# Add this import at the top of main.py
+from app.models.domain import VendorDomain, DomainSuggestion
 
 app = FastAPI(
     title="vendor-product-api",
@@ -63,6 +66,12 @@ app.include_router(
     routes_business_profile.router,
     prefix="/api/business-profile", 
     tags=["Business Profile"]
+)
+
+app.include_router(
+    domain_router, 
+    prefix="/api/domains", 
+    tags=["Domains"]
 )
 
 app.include_router(users.router, prefix="/users", tags=["Users"])
