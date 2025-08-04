@@ -1,24 +1,26 @@
 import json
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
-from fastapi import Query
 
-from app.schemas.product import ProductCreate, ProductOut
+from app.schemas.product import ProductCreate, ProductOut, ProductUpdate
 from app.crud import product as crud_product
 from app.db.deps import get_db, get_current_vendor
 from app.models.vendor import Vendor
-from app.schemas.product import ProductUpdate
-from app.services.image_service import generate_presigned_url, process_and_upload_images, process_and_upload_images1
+from app.services.image_service import (
+    generate_presigned_url,
+    process_and_upload_with_type,
+    get_presigned_urls_for_product,
+    extract_s3_key_from_presigned_url,
+    process_and_upload_images1
+)
 
 router = APIRouter()
 
-# 🔹 Test route
 @router.get("/test")
 def test():
     return {"message": "Product route is working"}
 
-# ✅ Create product
 @router.post("/", response_model=ProductOut, status_code=status.HTTP_201_CREATED)
 async def create_product_route(
     name: str = Form(...),
@@ -26,63 +28,100 @@ async def create_product_route(
     category: str = Form(...),
     stock: int = Form(...),
     price: float = Form(...),
-    pricing_tiers: str = Form(...),  # received as stringified JSON
+    pricing_tiers: str = Form(...),
+    processing_type: str = Form(default="enhanced"),
     images: List[UploadFile] = File(...),
     db: Session = Depends(get_db),
     vendor: Vendor = Depends(get_current_vendor),
 ):
-    """
-    Create a new product for the current logged-in vendor.
-    """
     try:
-        # Parse pricing_tiers JSON
-        pricing_tiers = json.loads(pricing_tiers)
-
-        # Validate pricing_tiers format
-        if not isinstance(pricing_tiers, list):
+        print(f"🏪 Creating product for vendor {vendor.id}: {name}")
+        print(f"🔧 Processing type received: '{processing_type}'")  # Debug log
+        
+        pricing_tiers_data = json.loads(pricing_tiers)
+        if not isinstance(pricing_tiers_data, list):
             raise ValueError("pricing_tiers must be a list of objects")
 
-        # Upload images to S3
-        image_urls = []  # Placeholder for image URLs
-        for img in images:
-            content = await img.read()
-            cleaned_image = await process_and_upload_images1(content, vendor.id)
-            if not isinstance(cleaned_image, str):
-                raise ValueError("Image processing failed. Expected a URL string.")
-            image_urls.append(cleaned_image)
+        # Validate and log processing type
+        if processing_type not in ["raw", "enhanced"]:
+            print(f"⚠️ Invalid processing type '{processing_type}', defaulting to 'enhanced'")
+            processing_type = "enhanced"
+        
+        print(f"🔧 Final processing type: '{processing_type}'")  # Debug log
 
-        # Create ProductCreate schema
+        image_keys = []
+        for i, img in enumerate(images):
+            if img.filename and img.filename != 'dummy.txt' and img.size > 0:
+                print(f"📸 Processing image {i+1}: {img.filename} with type '{processing_type}'")  # Debug log
+                
+                content = await img.read()
+                
+                # Add detailed debug logging
+                print(f"🔧 Calling process_and_upload_with_type with:")
+                print(f"   - vendor_id: {vendor.id}")
+                print(f"   - processing_type: '{processing_type}'")
+                print(f"   - original_filename: '{img.filename}'")
+                
+                s3_key = await process_and_upload_with_type(
+                    content=content,
+                    vendor_id=vendor.id,
+                    processing_type=processing_type,
+                    original_filename=img.filename
+                )
+                
+                print(f"✅ Received S3 key: {s3_key}")  # Debug log
+                
+                # Check if the S3 key indicates the right processing type
+                if processing_type == "raw" and "/raw/" not in s3_key:
+                    print(f"❌ ERROR: Expected /raw/ in S3 key for raw processing, got: {s3_key}")
+                elif processing_type == "enhanced" and "/enhanced/" not in s3_key:
+                    print(f"❌ ERROR: Expected /enhanced/ in S3 key for enhanced processing, got: {s3_key}")
+                
+                if not isinstance(s3_key, str):
+                    raise ValueError("Image processing failed. Expected S3 key string.")
+                image_keys.append(s3_key)
+
+        # ✅ FIXED: Remove vendor_id from ProductCreate (it's not in the schema)
         product_data = ProductCreate(
             name=name,
             description=description,
             category=category,
             stock=stock,
             price=price,
-            pricing_tiers=pricing_tiers,
-            image_urls=image_urls,
+            pricing_tiers=pricing_tiers_data,
+            image_urls=image_keys,
+            # vendor_id=vendor.id  # ❌ REMOVED - not in schema
         )
 
-        # Save to DB
-        created_product = crud_product.create_product(db=db, data=product_data, vendor_id=vendor.id)
+        product = crud_product.create_product(db=db, vendor_id=vendor.id, data=product_data)
+        presigned_urls = get_presigned_urls_for_product(image_keys)
 
-        # Return the created product
-        return ProductOut(
-            id=created_product.id,
-            vendor_id=created_product.vendor_id,
-            name=created_product.name,
-            description=created_product.description,
-            category=created_product.category,
-            stock=created_product.stock,
-            price=created_product.price,
-            pricing_tiers=created_product.pricing_tiers,
-            image_urls=created_product.image_urls,
-            created_at=created_product.created_at,
-        )
+        product_dict = {
+            "id": product.id,
+            "name": product.name,
+            "description": product.description,
+            "category": product.category,
+            "stock": product.stock,
+            "price": product.price,
+            "pricing_tiers": product.pricing_tiers,
+            "image_urls": presigned_urls,
+            "vendor_id": product.vendor_id,
+            "created_at": product.created_at.isoformat(),
+        }
 
-    except Exception as e:
+        print(f"🎉 Product created successfully with processing type: {processing_type}")
+        return ProductOut(**product_dict)
+
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid pricing_tiers JSON format")
+    except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-# ✅ List current vendor's products
+    except Exception as e:
+        print(f"❌ Error creating product: {e}")
+        import traceback
+        traceback.print_exc()  # Print full error traceback
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    
 @router.get("/mine", response_model=List[ProductOut])
 def list_my_products(
     page: int = 1,
@@ -90,27 +129,61 @@ def list_my_products(
     db: Session = Depends(get_db),
     vendor: Vendor = Depends(get_current_vendor)
 ):
-    """
-    List paginated products belonging to the logged-in vendor.
-    """
     skip = (page - 1) * size
     products = crud_product.get_products_by_vendor(db, vendor.id, skip=skip, limit=size)
-
-    # 👇 Inject presigned URLs for each product's images
+    products_with_urls = []
     for product in products:
-        product.image_urls = [
-            generate_presigned_url(key) for key in product.image_urls
-        ]
-    print(f"products: {products}")
-    
-    return products
+        try:
+            presigned_urls = [generate_presigned_url(key) for key in product.image_urls] if product.image_urls else []
+            product_response = ProductOut(
+                id=product.id,
+                name=product.name,
+                description=product.description,
+                category=product.category,
+                stock=product.stock,
+                price=product.price,
+                image_urls=presigned_urls,
+                vendor_id=product.vendor_id,
+                created_at=product.created_at,
+                pricing_tiers=product.pricing_tiers or []
+            )
+            products_with_urls.append(product_response)
+        except Exception:
+            continue
+    return products_with_urls
 
-# ✅ Optional: List all products from all vendors
+@router.get("/mine-simple", response_model=List[ProductOut])
+def list_my_products_simple(
+    page: int = 1,
+    size: int = 10,
+    db: Session = Depends(get_db),
+    vendor: Vendor = Depends(get_current_vendor)
+):
+    skip = (page - 1) * size
+    products = crud_product.get_products_by_vendor(db, vendor.id, skip=skip, limit=size)
+    products_with_urls = []
+    for product in products:
+        try:
+            presigned_urls = get_presigned_urls_for_product(product.image_urls)
+            product_response = ProductOut(
+                id=product.id,
+                name=product.name,
+                description=product.description,
+                category=product.category,
+                stock=product.stock,
+                price=product.price,
+                image_urls=presigned_urls,
+                vendor_id=product.vendor_id,
+                created_at=product.created_at,
+                pricing_tiers=product.pricing_tiers or []
+            )
+            products_with_urls.append(product_response)
+        except Exception:
+            continue
+    return products_with_urls
+
 @router.get("/all", response_model=List[ProductOut])
 def list_all_products(db: Session = Depends(get_db)):
-    """
-    List all products in the system (Admin use case).
-    """
     return crud_product.get_all_products(db)
 
 @router.get("/{product_id}", response_model=ProductOut)
@@ -118,122 +191,102 @@ def get_product_by_id_route(
     product_id: int,
     db: Session = Depends(get_db)
 ):
-    
     product = crud_product.get_product_by_id(db, product_id)
-    product.image_urls = [
-        generate_presigned_url(obj_key) for obj_key in product.image_urls
-    ]
-    print(f"product image urls: {product.image_urls}")
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
+    product.image_urls = [generate_presigned_url(obj_key) for obj_key in product.image_urls]
     return product
-
-# Replace your update_product_images endpoint in app/api/routes_product.py with this improved version:
 
 @router.post("/{product_id}/images", response_model=ProductOut)
 async def update_product_images(
     product_id: int,
-    images: List[UploadFile] = File(...),  # New images to upload
-    existing_images: Optional[str] = Form(None),  # JSON string of existing images to keep
+    images: List[UploadFile] = File(...),
+    existing_images: Optional[str] = Form(None),
+    processing_type: str = Form(default="enhanced"),  # 👈 NEW: Add processing type
     db: Session = Depends(get_db),
     vendor: Vendor = Depends(get_current_vendor)
 ):
-    """
-    Update product images: keeps existing images + adds new uploads
-    """
     try:
-        # Check if product exists and belongs to vendor
         existing_product = crud_product.get_product_by_id(db, product_id)
         if not existing_product or existing_product.vendor_id != vendor.id:
             raise HTTPException(
-                status_code=404, 
+                status_code=404,
                 detail="Product not found or you don't have permission to update it"
             )
-        
+
         print(f"🔄 Updating images for product {product_id}")
-        print(f"📁 Received {len(images)} files")
-        print(f"📋 Existing images data: {existing_images}")
-        
-        # Parse existing images to keep
-        existing_image_urls = []
+        print(f"🔧 Processing type: {processing_type}")  # 👈 NEW: Log processing type
+
+        # Validate processing type
+        if processing_type not in ["raw", "enhanced"]:
+            print(f"⚠️ Invalid processing type '{processing_type}', defaulting to 'enhanced'")
+            processing_type = "enhanced"
+
+        existing_image_keys = []
         if existing_images:
             try:
-                existing_image_urls = json.loads(existing_images)
-                print(f"📷 Keeping {len(existing_image_urls)} existing images")
+                existing_presigned_urls = json.loads(existing_images)
+                for url in existing_presigned_urls:
+                    try:
+                        s3_key = extract_s3_key_from_presigned_url(url)
+                        existing_image_keys.append(s3_key)
+                    except ValueError:
+                        continue
             except json.JSONDecodeError:
-                print("⚠️ Failed to parse existing_images JSON, assuming no existing images")
-        
-        # Process new image uploads (filter out dummy files)
-        new_image_urls = []
+                pass
+
+        new_image_keys = []
         for img in images:
-            # Skip dummy files (empty files or specific dummy names)
-            if (img.filename and 
-                img.filename != 'dummy.txt' and 
-                img.size > 0):
-                
-                print(f"📤 Processing new image: {img.filename} ({img.size} bytes)")
+            if img.filename and img.filename != 'dummy.txt' and img.size > 0:
                 content = await img.read()
-                
-                # Skip if content is empty
                 if len(content) == 0:
-                    print(f"⚠️ Skipping empty file: {img.filename}")
                     continue
-                    
                 try:
-                    cleaned_image = await process_and_upload_images1(content, vendor.id)
-                    if not isinstance(cleaned_image, str):
-                        raise ValueError("Image processing failed. Expected a URL string.")
-                    new_image_urls.append(cleaned_image)
-                    print(f"✅ Successfully processed: {img.filename}")
+                    # 👈 FIXED: Use process_and_upload_with_type instead of process_and_upload_images1
+                    s3_key = await process_and_upload_with_type(
+                        content=content,
+                        vendor_id=vendor.id,
+                        processing_type=processing_type,
+                        original_filename=img.filename
+                    )
+                    if not isinstance(s3_key, str):
+                        raise ValueError("Image processing failed. Expected S3 key string.")
+                    new_image_keys.append(s3_key)
+                    print(f"✅ Uploaded new image with key: {s3_key}")
                 except Exception as e:
                     print(f"❌ Failed to process {img.filename}: {str(e)}")
                     continue
-            else:
-                print(f"⏭️ Skipping file: {img.filename} (dummy or empty)")
-        
-        print(f"✅ Successfully uploaded {len(new_image_urls)} new images")
-        
-        # Combine existing + new images
-        all_image_urls = existing_image_urls + new_image_urls
-        print(f"📊 Total images after update: {len(all_image_urls)}")
-        
-        # Validate total image count
-        if len(all_image_urls) > 6:
+
+        all_image_keys = existing_image_keys + new_image_keys
+
+        if len(all_image_keys) > 6:
             raise HTTPException(
-                status_code=400, 
-                detail=f"Too many images. Maximum 6 allowed, got {len(all_image_urls)}"
+                status_code=400,
+                detail=f"Too many images. Maximum 6 allowed, got {len(all_image_keys)}"
             )
-        
-        if len(all_image_urls) == 0:
+
+        if len(all_image_keys) == 0:
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail="At least one image is required"
             )
-        
-        # Update the product with all images
-        updated_product = crud_product.update_product_images(db, product_id, all_image_urls)
+
+        updated_product = crud_product.update_product_images(db, product_id, all_image_keys)
         if not updated_product:
             raise HTTPException(status_code=404, detail="Failed to update product images")
-        
-        # Generate presigned URLs for the response
+
         if updated_product.image_urls:
             updated_product.image_urls = [
                 generate_presigned_url(key) for key in updated_product.image_urls
             ]
         
-        print(f"🎉 Successfully updated product {product_id} with {len(all_image_urls)} images")
+        print(f"🎉 Successfully updated product {product_id} with processing type: {processing_type}")
         return updated_product
-        
+
     except HTTPException:
-        # Re-raise HTTP exceptions as-is
         raise
     except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        print(f"❌ Error updating product images: {str(e)}")
-        print(f"Error details: {error_details}")
-        raise HTTPException(status_code=400, detail=str(e))
-    
+        raise HTTPException(status_code=500, detail=f"Failed to update images: {str(e)}")
 @router.patch("/{product_id}/details", response_model=ProductOut)
 async def update_product_details(
     product_id: int,
@@ -242,22 +295,16 @@ async def update_product_details(
     category: Optional[str] = Form(None),
     stock: Optional[int] = Form(None),
     price: Optional[float] = Form(None),
-    pricing_tiers: Optional[str] = Form(None),  # received as stringified JSON
+    pricing_tiers: Optional[str] = Form(None),
     db: Session = Depends(get_db),
-    vendor: Vendor = Depends(get_current_vendor)    
+    vendor: Vendor = Depends(get_current_vendor)
 ):
-    """
-    Update product details excluding images.
-    """
     try:
         existing_product = crud_product.get_product_by_id(db, product_id)
         if not existing_product or existing_product.vendor_id != vendor.id:
             raise HTTPException(status_code=404, detail="Product not found or unauthorized")
-             
-        # Prepare update data
+
         update_data = {}
-        
-        # Add fields that are provided
         if name is not None:
             update_data["name"] = name
         if description is not None:
@@ -268,58 +315,44 @@ async def update_product_details(
             update_data["stock"] = stock
         if price is not None:
             update_data["price"] = price
-            
-        # Handle pricing_tiers if provided
+
         if pricing_tiers is not None:
             try:
                 parsed_pricing_tiers = json.loads(pricing_tiers)
-                # Validate pricing_tiers format
                 if not isinstance(parsed_pricing_tiers, list):
                     raise ValueError("pricing_tiers must be a list of objects")
                 update_data["pricing_tiers"] = parsed_pricing_tiers
-                
-                # Update price from first tier if provided
                 if parsed_pricing_tiers and not price:
                     update_data["price"] = parsed_pricing_tiers[0].get("price")
             except json.JSONDecodeError:
                 raise HTTPException(
-                    status_code=400, 
+                    status_code=400,
                     detail="Invalid JSON format for pricing_tiers"
                 )
-        
-        # If no fields to update, return early
+
         if not update_data:
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail="No fields provided for update"
             )
-        
-        # Create ProductUpdate schema from update_data
+
         product_update = ProductUpdate(**update_data)
-        
-        # Update the product
         updated_product = crud_product.update_product(db, product_id, vendor.id, product_update)
         if not updated_product:
             raise HTTPException(
-                status_code=404, 
+                status_code=404,
                 detail="Product update failed"
             )
-        
-        # Generate presigned URLs for images
+
         if updated_product.image_urls:
             updated_product.image_urls = [
                 generate_presigned_url(key) for key in updated_product.image_urls
             ]
-        
+
         return updated_product
-        
+
     except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        print(f"Error updating product details: {str(e)}")
-        print(f"Error details: {error_details}")
         raise HTTPException(status_code=400, detail=str(e))
-    
 
 @router.delete("/{product_id}", status_code=204)
 def delete_product_route(
@@ -338,11 +371,4 @@ def search_my_products(
     db: Session = Depends(get_db),
     vendor: Vendor = Depends(get_current_vendor)
 ):
-    """
-    🔍 Search products by name or category (only for the logged-in vendor).
-    """
     return crud_product.search_products_by_vendor(db, vendor.id, query)
-
-
-
-

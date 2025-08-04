@@ -1,5 +1,6 @@
-from fastapi.openapi.utils import get_openapi
+# app/main.py - Your existing file with Business Profile added
 
+from fastapi.openapi.utils import get_openapi
 from fastapi import FastAPI
 from app.db.session import engine, Base
 from app.api.routes_vendor import router as vendor_router
@@ -8,9 +9,11 @@ from app.api.routes_order import router as order_router
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes_vendor_store import router as vendor_store_router
 from app.routers import users, cart
-
+from app.api.routes_analytics import router as analytics_router
 from app.api.routes_ai import router as ai_router
-
+from app.api import routes_business_profile  # 👈 NEW: Business Profile import
+from app.core.database_optimizer import create_enterprise_indexes
+from app.db.session import SessionLocal
 
 app = FastAPI(
     title="vendor-product-api",
@@ -33,34 +36,47 @@ app.include_router(
     vendor_router, 
     prefix="/api/vendor", 
     tags=["Vendor"],
-    
 )
 app.include_router(
     product_router, 
     prefix="/api/products", 
     tags=["Product"],
-    
 )
-
 app.include_router(
     order_router, 
     prefix="/api/orders", 
     tags=["Order"],   
-    
 )
-
-
-
+app.include_router(
+    analytics_router,
+    prefix="/api/analytics", 
+    tags=["Analytics"]
+)
 app.include_router(
     ai_router,
     prefix="/api/ai",
     tags=["AI Product Extraction"]
 )
 
+# 👈 NEW: Business Profile routes
+app.include_router(
+    routes_business_profile.router,
+    prefix="/api/business-profile", 
+    tags=["Business Profile"]
+)
+
 app.include_router(users.router, prefix="/users", tags=["Users"])
 app.include_router(cart.router, prefix="/cart", tags=["Cart"])
 app.include_router(vendor_store_router, prefix="/api")
 
+def create_indexes():
+    db = SessionLocal()
+    try:
+        create_enterprise_indexes(db)
+    finally:
+        db.close()
+
+create_indexes()
 
 # 👇 Add custom OpenAPI with Bearer Auth
 def custom_openapi():
