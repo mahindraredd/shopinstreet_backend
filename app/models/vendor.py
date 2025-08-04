@@ -98,7 +98,7 @@ class Vendor(Base):
     # EXISTING RELATIONSHIPS (Keep these)
     # Uncomment this line if you have an Order model that references Vendor
     orders = relationship("Order", back_populates="vendor", cascade="all, delete-orphan")
-
+    domains = relationship("VendorDomain", back_populates="vendor")
     # ENTERPRISE PERFORMANCE INDEXES
     __table_args__ = (
         Index('idx_vendor_business_profile', 'business_type', 'country', 'profile_completed'),
