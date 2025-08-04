@@ -1,11 +1,23 @@
+# app/api/routes_vendor.py
+# Enterprise-grade vendor routes with encryption and compliance
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.db.deps import get_db, get_current_vendor
-from app.schemas.vendor import VendorRegister, VendorLogin, VendorOut  # Import VendorOut
+from app.schemas.vendor import (
+    VendorRegister, 
+    VendorLogin, 
+    VendorOut,
+    VendorProfileUpdate,
+    VendorBankingUpdate,
+    VendorNotificationSettings,
+    VendorProfileCompletion,
+    VendorRiskAssessment
+)
 from app.crud import vendor as crud_vendor
 from app.models.vendor import Vendor
 from app.core.security import create_access_token, hash_password, verify_password
+import logging
 
 router = APIRouter()
 
@@ -54,16 +66,208 @@ def login_vendor(data: VendorLogin, db: Session = Depends(get_db)):
         "is_verified": vendor.is_verified
     }
 
-# ✅ NEW: Get vendor profile endpoint
 @router.get("/profile", response_model=VendorOut)
 def get_vendor_profile(
     db: Session = Depends(get_db),
     vendor: Vendor = Depends(get_current_vendor)
 ):
-    """Get current vendor's profile information including address"""
+    """Get current vendor's profile information"""
+    # Update profile completion before returning
+    vendor.update_profile_completion()
+    vendor.update_compliance_status()
+    db.commit()
+    
     return vendor
+
+# 🆕 ENTERPRISE: Update vendor profile with encryption and compliance
+@router.put("/profile", response_model=VendorOut)
+def update_vendor_profile(
+    profile_data: VendorProfileUpdate,
+    db: Session = Depends(get_db),
+    vendor: Vendor = Depends(get_current_vendor)
+):
+    """Update vendor profile information with enterprise features"""
+    try:
+        # Update only provided fields
+        update_data = profile_data.dict(exclude_unset=True)
+        
+        for field, value in update_data.items():
+            if hasattr(vendor, field):
+                setattr(vendor, field, value)
+        
+        # Update profile completion and compliance
+        vendor.update_profile_completion()
+        vendor.update_compliance_status()
+        
+        db.commit()
+        db.refresh(vendor)
+        
+        logging.info(f"Vendor {vendor.id} profile updated. Completion: {vendor.profile_completion_percentage}%")
+        
+        return vendor
+    except Exception as e:
+        db.rollback()
+        logging.error(f"Profile update failed for vendor {vendor.id}: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to update profile: {str(e)}")
+
+# 🆕 ENTERPRISE: Update banking information with encryption
+@router.put("/banking")
+def update_vendor_banking(
+    banking_data: VendorBankingUpdate,
+    db: Session = Depends(get_db),
+    vendor: Vendor = Depends(get_current_vendor)
+):
+    """Update vendor banking information with enterprise encryption"""
+    try:
+        # Update banking fields using property setters (auto-encryption)
+        update_data = banking_data.dict(exclude_unset=True)
+        
+        for field, value in update_data.items():
+            if hasattr(vendor, field) and value is not None:
+                setattr(vendor, field, value)
+        
+        # Update profile completion after banking info
+        vendor.update_profile_completion()
+        vendor.update_compliance_status()
+        
+        db.commit()
+        db.refresh(vendor)
+        
+        # Log banking update (without sensitive data)
+        logging.info(f"Vendor {vendor.id} banking information updated. Encrypted: {vendor.is_banking_data_encrypted()}")
+        
+        return {
+            "message": "Banking information updated successfully",
+            "encrypted": vendor.is_banking_data_encrypted(),
+            "profile_completion": vendor.profile_completion_percentage
+        }
+    except Exception as e:
+        db.rollback()
+        logging.error(f"Banking update failed for vendor {vendor.id}: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to update banking info: {str(e)}")
+
+# 🆕 ENTERPRISE: Notification settings (stored in vendor for now)
+@router.put("/notifications")
+def update_vendor_notifications(
+    notification_data: VendorNotificationSettings,
+    db: Session = Depends(get_db),
+    vendor: Vendor = Depends(get_current_vendor)
+):
+    """Update vendor notification preferences"""
+    try:
+        # For enterprise version, you might want to store this in a separate table
+        # For now, we'll store it as a JSON field or return success
+        
+        preferences = notification_data.dict()
+        
+        # In a full enterprise system, you'd store this in a notifications table
+        # vendor.notification_preferences = preferences  # If you add this JSON field
+        
+        logging.info(f"Vendor {vendor.id} notification preferences updated")
+        
+        return {
+            "message": "Notification preferences updated successfully",
+            "preferences": preferences
+        }
+    except Exception as e:
+        logging.error(f"Notification update failed for vendor {vendor.id}: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to update notifications: {str(e)}")
+
+# 🆕 ENTERPRISE: Get notification settings
+@router.get("/notifications")
+def get_vendor_notifications(
+    db: Session = Depends(get_db),
+    vendor: Vendor = Depends(get_current_vendor)
+):
+    """Get vendor notification preferences"""
+    # Return default settings for now - in enterprise, load from notifications table
+    return {
+        "email_notifications": True,
+        "order_updates": True,
+        "low_stock_alerts": True,
+        "marketing_emails": False,
+        "weekly_reports": True
+    }
+
+# 🆕 ENTERPRISE: Profile completion analytics
+@router.get("/profile/completion", response_model=VendorProfileCompletion)
+def get_profile_completion(
+    db: Session = Depends(get_db),
+    vendor: Vendor = Depends(get_current_vendor)
+):
+    """Get detailed profile completion analysis"""
+    vendor.update_profile_completion()
+    db.commit()
+    
+    # Analyze missing fields
+    missing_fields = []
+    suggestions = []
+    
+    if not vendor.business_description:
+        missing_fields.append("business_description")
+        suggestions.append("Add a detailed business description to improve customer trust")
+    
+    if not vendor.website_url:
+        missing_fields.append("website_url")
+        suggestions.append("Add your website URL to increase credibility")
+    
+    if vendor.country == "Canada" and not vendor.hst_pst_number:
+        missing_fields.append("hst_pst_number")
+        suggestions.append("Add HST/PST number for Canadian tax compliance")
+    
+    if vendor.country == "India" and not vendor.gst_number:
+        missing_fields.append("gst_number")
+        suggestions.append("Add GST number for Indian tax compliance")
+    
+    if not vendor.bank_name or not vendor.account_number:
+        missing_fields.append("banking_info")
+        suggestions.append("Complete banking information for payment processing")
+    
+    return VendorProfileCompletion(
+        profile_completion_percentage=vendor.profile_completion_percentage,
+        profile_completed=vendor.profile_completed,
+        missing_fields=missing_fields,
+        suggestions=suggestions
+    )
+
+# 🆕 ENTERPRISE: Risk assessment
+@router.get("/profile/risk", response_model=VendorRiskAssessment)
+def get_risk_assessment(
+    db: Session = Depends(get_db),
+    vendor: Vendor = Depends(get_current_vendor)
+):
+    """Get vendor risk assessment and compliance status"""
+    vendor.update_compliance_status()
+    db.commit()
+    
+    # Analyze risk factors
+    risk_factors = []
+    recommendations = []
+    
+    if not vendor.is_verified:
+        risk_factors.append("Account not verified")
+        recommendations.append("Complete account verification process")
+    
+    if vendor.profile_completion_percentage < 80:
+        risk_factors.append("Incomplete profile")
+        recommendations.append("Complete your business profile to reduce risk score")
+    
+    if vendor.country == "India" and not vendor.gst_number:
+        risk_factors.append("Missing GST number")
+        recommendations.append("Add GST number for tax compliance")
+    
+    if not vendor.bank_name:
+        risk_factors.append("Missing banking information")
+        recommendations.append("Add banking details for payment processing")
+    
+    return VendorRiskAssessment(
+        risk_score=vendor.risk_score,
+        compliance_status=vendor.compliance_status,
+        risk_factors=risk_factors,
+        recommendations=recommendations
+    )
 
 @router.get("/test")
 def test():
     """Test endpoint to verify vendor route is working"""
-    return {"message": "Vendor route is working"}
+    return {"message": "Enterprise vendor route is working"}

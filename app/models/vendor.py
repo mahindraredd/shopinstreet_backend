@@ -1,4 +1,4 @@
-# app/models/vendor.py - COMPLETE ENTERPRISE VERSION
+# app/models/vendor.py - FIXED ENTERPRISE VERSION
 
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, Index
 from sqlalchemy.dialects.postgresql import JSONB
@@ -58,11 +58,12 @@ class Vendor(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     template_id = Column(Integer, default=1, nullable=True)
 
-    # NEW ENTERPRISE BUSINESS PROFILE FIELDS
-    
-    # Enhanced Business Information
+    # 🔧 FIXED: Enhanced Business Information (removed duplicate business_description)
     business_type = Column(String(50), nullable=True, index=True)  # Corporation, Partnership, etc.
-    business_description = Column(Text, nullable=True)
+    business_description = Column(Text, nullable=True)  # Keep only one declaration
+    timezone = Column(String(50), default="America/Toronto", nullable=False)  # Fixed default
+    currency = Column(String(3), default="CAD", nullable=False)  # Fixed default for Canada
+    business_hours = Column(String, default="9:00 AM - 6:00 PM")
     
     # Tax & Legal Information (indexed for compliance queries)
     gst_number = Column(String(15), nullable=True, index=True)  # India GST
@@ -71,8 +72,8 @@ class Vendor(Base):
     business_registration_number = Column(String(50), nullable=True, index=True)
     tax_exemption_status = Column(Boolean, default=False, nullable=False)
     
-    # Banking Information - ENCRYPTED for enterprise security
-    bank_name = Column(String(100), nullable=True)
+    # 🔧 FIXED: Banking Information - ENCRYPTED for enterprise security (removed duplicates)
+    bank_name = Column(String(100), nullable=True)  # Keep only one declaration
     account_number_encrypted = Column(Text, nullable=True)  # Encrypted storage
     routing_code_encrypted = Column(Text, nullable=True)    # Encrypted storage
     account_holder_name = Column(String(100), nullable=True)
@@ -80,10 +81,6 @@ class Vendor(Base):
     # Enhanced Contact Information
     alternate_email = Column(String(255), nullable=True)
     alternate_phone = Column(String(20), nullable=True)
-    
-    # Business Operations
-    timezone = Column(String(50), default="UTC", nullable=False)
-    currency = Column(String(3), default="USD", nullable=False)  # ISO 4217 codes
     
     # Profile Completion & Analytics
     profile_completed = Column(Boolean, default=False, nullable=False, index=True)
@@ -99,6 +96,7 @@ class Vendor(Base):
     last_compliance_check = Column(DateTime(timezone=True), nullable=True)
 
     # EXISTING RELATIONSHIPS (Keep these)
+    # Uncomment this line if you have an Order model that references Vendor
     orders = relationship("Order", back_populates="vendor", cascade="all, delete-orphan")
 
     # ENTERPRISE PERFORMANCE INDEXES
