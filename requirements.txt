@@ -17,3 +17,9 @@ rembg
 google-generativeai
 
 aiofiles
+aiohttp==3.9.1
+httpx==0.25.2
+dnspython==2.4.2
+python-whois==0.8.0
+aioredis==2.0.1
+cryptography==41.0.8
