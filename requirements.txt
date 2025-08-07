@@ -23,3 +23,19 @@ dnspython==2.4.2
 python-whois==0.8.0
 aioredis==2.0.1
 cryptography==41.0.8
+# Domain Service Dependencies
+razorpay==1.3.0
+dnspython==2.4.2
+requests==2.31.0
+cryptography==41.0.7
+
+# Indian Payment Gateways
+payu-python==0.1.0
+
+# Background Processing (Optional)
+celery[redis]==5.3.4
+redis==5.0.1
+
+# Additional utilities
+python-dotenv==1.0.0
+pydantic-settings==2.0.3
