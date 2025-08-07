@@ -1,164 +1,136 @@
-# app/schemas/domain.py - CLEAN FIXED VERSION
-from pydantic import BaseModel, Field, validator
+# app/schemas/domain.py - INDIAN MARKET VERSION
+from pydantic import BaseModel, EmailStr, Field, validator
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
+# ========================================
+# DOMAIN SUGGESTION SCHEMAS
+# ========================================
+
 class DomainSuggestionOut(BaseModel):
-    """Enhanced domain suggestion with multi-registrar pricing"""
+    """Domain suggestion for Indian market with INR pricing"""
     suggested_domain: str
     tld: str
     
-    # Customer pricing (what they see and pay)
-    registration_price: float
-    registration_price_display: Optional[str] = None  # Formatted with currency symbol
-    renewal_price: float
-    renewal_price_display: Optional[str] = None
-    currency: Optional[str] = "USD"  # USD, INR, EUR, etc.
-    currency_symbol: Optional[str] = "$"  # $, ₹, €, etc.
+    # Indian market pricing in INR
+    registration_price_inr: float
+    renewal_price_inr: float
+    registration_price_display: str = Field(default="")  # ₹999
+    renewal_price_display: str = Field(default="")      # ₹1,199
     
     # Availability and features
-    is_available: bool
-    is_premium: bool
+    is_available: bool = True
+    is_premium: bool = False
     is_popular_tld: bool
     recommendation_score: float = Field(ge=0.0, le=1.0)
     
-    # Business intelligence (internal data)
-    wholesale_price: Optional[float] = None  # What we pay the registrar
-    wholesale_registrar: Optional[str] = None  # Which registrar we'll use
-    margin_amount: Optional[float] = None  # Our profit in USD
-    margin_percent: Optional[float] = None  # Profit margin percentage
-    response_time_ms: Optional[int] = None  # How fast the check was
+    # Indian market features
+    hosting_included: bool = True
+    ssl_included: bool = True
+    setup_time: str = "24-48 hours"
+    registrar: str = "godaddy"
+    
+    # Format price displays automatically
+    def __init__(self, **data):
+        super().__init__(**data)
+        if not self.registration_price_display:
+            self.registration_price_display = f"₹{self.registration_price_inr:,.0f}"
+        if not self.renewal_price_display:
+            self.renewal_price_display = f"₹{self.renewal_price_inr:,.0f}"
     
     class Config:
         from_attributes = True
 
 class DomainSuggestionResponse(BaseModel):
-    """Enhanced response with market intelligence"""
+    """Indian market domain suggestions response"""
+    success: bool = True
     suggestions: List[DomainSuggestionOut]
     business_name: str
     total_suggestions: int
-    search_time_ms: int
     
-    # Geographic and market data
-    customer_location: Optional[str] = "US"  # US, India, UK, etc.
-    currency: Optional[str] = "USD"  # Primary currency for this customer
-    currency_symbol: Optional[str] = "$"  # Symbol to display
+    # Indian market specifics
+    currency: str = "INR"
+    market: str = "India"
+    cheapest_price_inr: Optional[float] = None
     
-    # Service performance metrics
-    registrars_checked: Optional[int] = 0  # How many registrars we queried
-    available_count: Optional[int] = 0  # How many domains are available
-    cheapest_price: Optional[float] = 0  # Lowest price found
-    
-    # Value proposition
-    average_savings: Optional[float] = None  # vs major competitors
-    fastest_response_ms: Optional[int] = None  # Fastest registrar response
+    # Set cheapest price automatically
+    def __init__(self, **data):
+        super().__init__(**data)
+        if self.suggestions and not self.cheapest_price_inr:
+            self.cheapest_price_inr = min(s.registration_price_inr for s in self.suggestions)
 
-class DomainAvailabilityCheck(BaseModel):
-    """Single domain availability with detailed registrar breakdown"""
-    domain: str
-    available: bool
-    premium: bool = False
-    
-    # Customer pricing
-    customer_price: float
-    customer_currency: str
-    customer_symbol: str
-    price_display: str
-    
-    # Business data
-    wholesale_price: float
-    wholesale_registrar: str
-    margin_amount: float
-    margin_percent: float
-    
-    # Performance metrics
-    checked_at: datetime
-    response_time_ms: int
-    registrars_checked: int
-    fastest_registrar: Optional[str] = None
-    
-    # Detailed registrar responses
-    registrar_details: List[Dict[str, Any]] = []
-
-class RegistrarStatus(BaseModel):
-    """Individual registrar status for monitoring"""
-    registrar: str
-    status: str  # online, offline, degraded
-    response_time_ms: int
-    reliability: float  # Historical uptime percentage
-    avg_price: float  # Average pricing for this registrar
-    last_checked: datetime
-
-class RegistrarStatusResponse(BaseModel):
-    """Overall registrar health status"""
-    registrars: Dict[str, RegistrarStatus]
-    summary: Dict[str, Any]
-
-class DomainValidation(BaseModel):
-    """Domain name validation result"""
-    domain: str
-    valid: bool
-    errors: List[str] = []
-    suggestions: List[str] = []  # Valid alternatives if invalid
-    
-    @validator('domain')
-    def validate_domain_format(cls, v):
-        """Validate domain name format"""
-        if not v or len(v) < 4:
-            raise ValueError('Domain must be at least 4 characters long')
-        
-        if not '.' in v:
-            raise ValueError('Domain must include a TLD (e.g., .com)')
-        
-        # Basic domain format validation
-        import re
-        if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9]*\.[a-zA-Z]{2,}$', v):
-            raise ValueError('Invalid domain format')
-        
-        return v.lower()
-
-# Step 2: Purchase and Payment Schemas
+# ========================================
+# CONTACT & PURCHASE SCHEMAS
+# ========================================
 
 class ContactInfoSchema(BaseModel):
-    """Contact information for domain registration"""
-    first_name: str = Field(..., min_length=2, max_length=50)
-    last_name: str = Field(..., min_length=2, max_length=50)
-    email: str = Field(..., pattern=r'^[^@]+@[^@]+\.[^@]+$')  # FIXED: pattern instead of regex
-    phone: str = Field(..., min_length=10, max_length=20)
-    company: Optional[str] = Field(None, max_length=100)
-    address_line1: str = Field(..., min_length=5, max_length=100)
-    address_line2: Optional[str] = Field(None, max_length=100)
-    city: str = Field(..., min_length=2, max_length=50)
-    state: str = Field(..., min_length=2, max_length=50)
-    postal_code: str = Field(..., min_length=3, max_length=20)
-    country: str = Field(default="US", min_length=2, max_length=3)
+    """Contact information for Indian domain registration"""
+    name: str = Field(..., min_length=2, max_length=100, description="Full name")
+    email: EmailStr = Field(..., description="Email address")
+    phone: str = Field(..., min_length=10, max_length=15, description="Phone number with country code")
+    organization: Optional[str] = Field(None, max_length=100, description="Company/Organization name")
     
-    @validator('email')
-    def validate_email(cls, v):
-        if '@' not in v or '.' not in v.split('@')[-1]:
-            raise ValueError('Please enter a valid email address')
-        return v.lower()
+    # Indian address format
+    address: str = Field(..., min_length=10, max_length=200, description="Street address")
+    city: str = Field(..., min_length=2, max_length=50, description="City")
+    state: str = Field(default="Karnataka", max_length=50, description="Indian state")
+    postal_code: str = Field(..., min_length=6, max_length=6, description="6-digit PIN code")
+    country: str = Field(default="India", description="Country")
     
     @validator('phone')
-    def validate_phone(cls, v):
+    def validate_indian_phone(cls, v):
+        """Validate Indian phone number"""
         # Remove all non-digit characters
         clean_phone = ''.join(filter(str.isdigit, v))
-        if len(clean_phone) < 10:
-            raise ValueError('Phone number must be at least 10 digits')
+        
+        # Indian mobile numbers are 10 digits, landline can be 10-11
+        if len(clean_phone) < 10 or len(clean_phone) > 11:
+            raise ValueError('Indian phone number must be 10-11 digits')
+        
+        # Indian mobile numbers start with 6, 7, 8, or 9
+        if len(clean_phone) == 10 and clean_phone[0] not in '6789':
+            raise ValueError('Invalid Indian mobile number format')
+        
         return clean_phone
+    
+    @validator('postal_code')
+    def validate_indian_pincode(cls, v):
+        """Validate Indian PIN code"""
+        clean_pin = ''.join(filter(str.isdigit, v))
+        if len(clean_pin) != 6:
+            raise ValueError('Indian PIN code must be exactly 6 digits')
+        return clean_pin
+    
+    @validator('state')
+    def validate_indian_state(cls, v):
+        """Validate Indian state"""
+        indian_states = [
+            'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chhattisgarh',
+            'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jharkhand', 'Karnataka',
+            'Kerala', 'Madhya Pradesh', 'Maharashtra', 'Manipur', 'Meghalaya', 'Mizoram',
+            'Nagaland', 'Odisha', 'Punjab', 'Rajasthan', 'Sikkim', 'Tamil Nadu',
+            'Telangana', 'Tripura', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal',
+            'Delhi', 'Puducherry', 'Chandigarh', 'Jammu and Kashmir', 'Ladakh'
+        ]
+        if v not in indian_states:
+            # Allow the value but could warn
+            pass
+        return v
 
 class DomainPurchaseRequest(BaseModel):
-    """Request to purchase a domain"""
-    domain: str = Field(..., min_length=4, max_length=253)
-    contact_info: ContactInfoSchema
-    payment_method: str = Field(..., description="Payment method: credit_card, paypal, stripe")
+    """Domain purchase request for Indian market"""
+    domain_name: str = Field(..., min_length=4, max_length=253, description="Domain name to purchase")
     template_id: int = Field(..., ge=1, le=10, description="Website template ID")
-    registration_years: int = Field(1, ge=1, le=10, description="Registration period in years")
+    contact_info: ContactInfoSchema
+    payment_method: str = Field(default="razorpay", description="Payment gateway: razorpay, payu")
+    registration_years: int = Field(default=1, ge=1, le=5, description="Registration years")
     
-    @validator('domain')
+    @validator('domain_name')
     def validate_domain(cls, v):
+        """Validate domain name format"""
         if not v or '.' not in v:
             raise ValueError('Please enter a valid domain name')
+        
         # Basic domain format validation
         import re
         if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9]*\.[a-zA-Z]{2,}$', v):
@@ -167,118 +139,142 @@ class DomainPurchaseRequest(BaseModel):
     
     @validator('payment_method')
     def validate_payment_method(cls, v):
-        allowed_methods = ['credit_card', 'paypal', 'stripe', 'bank_transfer']
+        """Validate Indian payment methods"""
+        allowed_methods = ['razorpay', 'payu', 'test']  # Added 'test' for development
         if v.lower() not in allowed_methods:
             raise ValueError(f'Payment method must be one of: {", ".join(allowed_methods)}')
         return v.lower()
 
 class DomainPurchaseResponse(BaseModel):
-    """Response from domain purchase request"""
+    """Domain purchase response"""
     success: bool
-    order_id: str
-    domain: str
-    amount: float
-    currency: str
-    status: str
-    payment_methods: List[Dict[str, Any]]
-    next_step: str
-    message: str
-    estimated_completion: Optional[str] = None
-
-class PaymentDetailsSchema(BaseModel):
-    """Payment details for different payment methods"""
-    # Credit card details
-    card_number: Optional[str] = Field(None, min_length=13, max_length=19)
-    card_expiry: Optional[str] = Field(None, pattern=r'^\d{2}/\d{2}$')  # FIXED: pattern instead of regex
-    card_cvv: Optional[str] = Field(None, min_length=3, max_length=4)
-    cardholder_name: Optional[str] = Field(None, min_length=2, max_length=100)
-    
-    # PayPal details
-    paypal_email: Optional[str] = None
-    paypal_token: Optional[str] = None
-    
-    # Stripe details
-    stripe_token: Optional[str] = None
-    stripe_payment_method_id: Optional[str] = None
-    
-    # Bank transfer details
-    bank_account: Optional[str] = None
-    bank_routing: Optional[str] = None
-    
-    @validator('card_number')
-    def validate_card_number(cls, v):
-        if v:
-            # Remove spaces and validate length
-            clean_number = v.replace(' ', '')
-            if not clean_number.isdigit() or len(clean_number) < 13:
-                raise ValueError('Invalid credit card number')
-        return v
-    
-    @validator('card_expiry')
-    def validate_expiry(cls, v):
-        if v:
-            try:
-                month, year = v.split('/')
-                month, year = int(month), int(year)
-                if month < 1 or month > 12:
-                    raise ValueError('Invalid expiry month')
-                # Add 2000 to year if it's 2-digit
-                if year < 100:
-                    year += 2000
-                from datetime import datetime
-                if datetime(year, month, 1) < datetime.now():
-                    raise ValueError('Card has expired')
-            except:
-                raise ValueError('Invalid expiry date format (use MM/YY)')
-        return v
-
-class PaymentRequest(BaseModel):
-    """Request to process payment for an order"""
-    payment_details: PaymentDetailsSchema
-    save_payment_method: bool = Field(False, description="Save payment method for future use")
-    billing_address_same_as_contact: bool = Field(True, description="Use contact address for billing")
-
-class PaymentResponse(BaseModel):
-    """Response from payment processing"""
-    success: bool
-    order_id: str
-    payment_id: Optional[str] = None
-    status: str
+    order_id: Optional[int] = None
+    order_number: Optional[str] = None
+    domain_name: Optional[str] = None
+    total_amount_inr: Optional[float] = None
+    registrar: Optional[str] = "godaddy"
     message: str
     error: Optional[str] = None
-    estimated_completion: Optional[str] = None
-    next_steps: Optional[List[str]] = None
+    
+    # Indian payment specifics
+    payment_gateway: Optional[str] = None
+    razorpay_order_id: Optional[str] = None
+    estimated_completion: str = "24-48 hours"
+
+# ========================================
+# ORDER STATUS SCHEMAS  
+# ========================================
 
 class OrderStep(BaseModel):
-    """Individual step in order processing"""
-    step: str
+    """Order processing step"""
+    step_name: str
     status: str  # pending, in_progress, completed, failed
     description: str
-    estimated_time: Optional[str] = None
+    completion_percentage: int = 0
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
 
 class OrderStatusResponse(BaseModel):
-    """Detailed order status response"""
-    order_id: str
-    domain: str
-    status: str
-    payment_status: str
+    """Detailed order status for Indian market"""
+    order_id: int
+    order_number: Optional[str] = None
+    domain_name: str
+    status: str  # pending_purchase, purchased, dns_configuring, hosting_setup, active, failed
     completion_percentage: int = Field(ge=0, le=100)
-    estimated_time_remaining: str
-    steps: List[OrderStep]
-    created_at: str
-    updated_at: str
-    error_message: Optional[str] = None
-    website_url: Optional[str] = None
+    current_step: str
     
-    # Additional order details
+    # Payment information
+    payment_status: str = "pending"
+    total_amount_inr: Optional[float] = None
+    
+    # Technical details
+    registrar: str = "godaddy"
     template_id: Optional[int] = None
-    registrar_used: Optional[str] = None
-    ssl_certificate: Optional[Dict[str, Any]] = None
-    dns_records: Optional[List[Dict[str, str]]] = None
+    ssl_enabled: bool = False
+    hosting_active: bool = False
+    
+    # Timestamps
+    created_at: Optional[str] = None
+    payment_confirmed_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    
+    # Results
+    website_url: Optional[str] = None
+    error_message: Optional[str] = None
+    
+    # Processing info
+    is_processing: bool = False
+    using_mock: bool = False
+    estimated_completion: str = "24-48 hours"
 
-# Additional useful schemas
+# ========================================
+# EXISTING DOMAIN CONNECTION
+# ========================================
+
+class ExistingDomainRequest(BaseModel):
+    """Connect existing domain request"""
+    domain_name: str = Field(..., min_length=4, max_length=253)
+    registrar: str = Field(..., min_length=2, max_length=50, description="Current registrar")
+    template_id: int = Field(..., ge=1, le=10)
+    
+    @validator('domain_name')
+    def validate_domain(cls, v):
+        """Validate domain format"""
+        if not v or '.' not in v:
+            raise ValueError('Please enter a valid domain name')
+        import re
+        if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9]*\.[a-zA-Z]{2,}$', v):
+            raise ValueError('Invalid domain format')
+        return v.lower()
+
+# ========================================
+# VENDOR DOMAIN SCHEMAS
+# ========================================
+
+
+class VendorDomainOut(BaseModel):
+    """Vendor domain output for Indian market"""
+    id: int
+    domain_name: str
+    type: str  # purchased, custom, subdomain
+    status: str  # active, pending, expired, failed
+    
+    # Template and hosting
+    template_id: Optional[int] = None
+    ssl_enabled: bool = False
+    dns_configured: bool = False
+    hosting_active: bool = False
+    
+    # Indian market pricing
+    purchase_price_inr: Optional[float] = None
+    renewal_price_inr: Optional[float] = None
+    purchase_price_display: Optional[str] = None
+    renewal_price_display: Optional[str] = None
+    
+    # Technical details
+    registrar: Optional[str] = None
+    expiry_date: Optional[str] = None
+    created_at: str
+    
+    # Access URL
+    website_url: str
+    
+    # Format prices automatically
+    def __init__(self, **data):
+        super().__init__(**data)
+        if self.purchase_price_inr and not self.purchase_price_display:
+            self.purchase_price_display = f"₹{self.purchase_price_inr:,.0f}"
+        if self.renewal_price_inr and not self.renewal_price_display:
+            self.renewal_price_display = f"₹{self.renewal_price_inr:,.0f}"
+    
+    class Config:
+        from_attributes = True
+
+# ========================================
+# TEMPLATE SCHEMAS
+# ========================================
+
+
 class TemplateInfo(BaseModel):
     """Website template information"""
     id: int
@@ -288,29 +284,86 @@ class TemplateInfo(BaseModel):
     preview_url: str
     features: List[str]
     suitable_for: List[str]
-    price: Optional[float] = 0.0
-    setup_time: str = "5-10 minutes"
+    
+    # Indian market specifics
+    setup_time: str = "24-48 hours"
+    includes_hosting: bool = True
+    includes_ssl: bool = True
+    mobile_optimized: bool = True
 
-class PaymentMethodInfo(BaseModel):
-    """Payment method information"""
-    id: str
-    name: str
-    icon: str
-    description: str
-    processing_time: str = "Instant"
-    fees: Optional[str] = None
-    supported_currencies: List[str] = ["USD"]
+# ========================================
+# VALIDATION SCHEMAS
+# ========================================
 
-class DomainOrderSummary(BaseModel):
-    """Summary of a domain order for listing"""
-    order_id: str
+class DomainValidationResponse(BaseModel):
+    """Domain validation response"""
     domain: str
-    status: str
-    amount: float
-    currency: str
-    created_at: str
-    completion_percentage: int
-    template_id: Optional[int] = None
-    can_cancel: bool = True
+    valid: bool
+    available: Optional[bool] = None
+    errors: List[str] = []
+    suggestions: List[str] = []
+    
+    # Indian market checks
+    supports_indian_tld: bool = True
+    estimated_price_inr: Optional[float] = None
 
-# Keep any other schemas you need but make sure no 'regex' parameters exist
+# ========================================
+# SERVICE HEALTH SCHEMAS
+# ========================================
+
+class DomainServiceHealth(BaseModel):
+    """Domain service health status"""
+    service: str = "Indian Domain Service"
+    status: str = "operational"
+    version: str = "1.0.0"
+    
+    # Market specifics
+    market: str = "India"
+    currency: str = "INR"
+    supported_tlds: List[str]
+    registrar: str = "godaddy"
+    
+    # Service status
+    using_mock: bool = False
+    godaddy_status: str = "online"
+    features: List[str]
+
+# ========================================
+# BULK AVAILABILITY SCHEMAS
+# ========================================
+
+class BulkAvailabilityRequest(BaseModel):
+    """Check multiple domains availability"""
+    domains: List[str] = Field(..., max_items=20, description="List of domains to check")
+    
+    @validator('domains')
+    def validate_domains(cls, v):
+        """Validate all domains in the list"""
+        if len(v) == 0:
+            raise ValueError('At least one domain is required')
+        
+        import re
+        for domain in v:
+            if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9]*\.[a-zA-Z]{2,}$', domain):
+                raise ValueError(f'Invalid domain format: {domain}')
+        
+        return [domain.lower() for domain in v]
+
+class DomainAvailabilityResult(BaseModel):
+    """Single domain availability result"""
+    domain: str
+    available: bool
+    price_inr: Optional[float] = None
+    registrar: str = "godaddy"
+    checked_at: str
+    response_time_ms: Optional[int] = None
+    error: Optional[str] = None
+
+class BulkAvailabilityResponse(BaseModel):
+    """Bulk domain availability response"""
+    success: bool = True
+    results: Dict[str, DomainAvailabilityResult]
+    total_checked: int
+    available_count: int
+    check_time_ms: int
+    currency: str = "INR"

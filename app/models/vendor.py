@@ -95,9 +95,10 @@ class Vendor(Base):
     compliance_status = Column(String(20), default="pending", nullable=False)  # pending, approved, rejected
     last_compliance_check = Column(DateTime(timezone=True), nullable=True)
 
-    # EXISTING RELATIONSHIPS (Keep these)
-    # Uncomment this line if you have an Order model that references Vendor
-    orders = relationship("Order", back_populates="vendor", cascade="all, delete-orphan")
+    orders = relationship("Order", back_populates="vendor")
+    domain_orders = relationship("DomainOrder", back_populates="vendor", cascade="all, delete-orphan")
+
+
     domains = relationship("VendorDomain", back_populates="vendor")
     # ENTERPRISE PERFORMANCE INDEXES
     __table_args__ = (
