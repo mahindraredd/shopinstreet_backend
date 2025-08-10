@@ -10,7 +10,11 @@ import base64
 import logging
 from typing import Optional
 from datetime import datetime
-
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, Numeric
+from sqlalchemy.sql import func
+from datetime import datetime
+import re
+import logging
 # Enterprise-grade encryption imports
 try:
     from cryptography.fernet import Fernet
@@ -95,7 +99,15 @@ class Vendor(Base):
     compliance_status = Column(String(20), default="pending", nullable=False)  # pending, approved, rejected
     last_compliance_check = Column(DateTime(timezone=True), nullable=True)
 
-    orders = relationship("Order", back_populates="vendor")
+    subdomain = Column(String(50), nullable=True, index=True)
+    domain_type = Column(String(20), default='free', nullable=False, index=True)
+    website_status = Column(String(20), default='draft', nullable=False, index=True)
+    went_live_at = Column(DateTime(timezone=True), nullable=True)
+    subdomain_created_at = Column(DateTime(timezone=True), default=func.now())
+    readiness_score = Column(Integer, default=0, nullable=False)
+
+    # RELATIONSHIPS
+    orders = relationship("app.models.order.Order", back_populates="vendor", lazy="dynamic")
     domain_orders = relationship("DomainOrder", back_populates="vendor", cascade="all, delete-orphan")
 
 
@@ -310,3 +322,240 @@ class Vendor(Base):
     # STRING REPRESENTATION
     def __repr__(self):
         return f"<Vendor(id={self.id}, business_name='{self.business_name}', email='{self.email}')>"
+    
+    def get_website_url(self):
+        """Get full website URL"""
+        if self.subdomain:
+            protocol = "https"  # Always use HTTPS in production
+            return f"{protocol}://{self.subdomain}.shopinstreet.com"
+        return None
+    
+    def get_website_status_display(self):
+        """Get human-readable website status"""
+        status_map = {
+            'draft': 'Coming Soon',
+            'preview': 'Preview Mode',
+            'live': 'Live Website'
+        }
+        return status_map.get(self.website_status, 'Unknown')
+    
+    def get_domain_type_display(self):
+        """Get human-readable domain type"""
+        type_map = {
+            'free': '🆓 Free Subdomain',
+            'purchased': '💼 Professional Domain', 
+            'custom': '⭐ Custom Domain'
+        }
+        return type_map.get(self.domain_type, 'Unknown')
+    
+    def calculate_readiness_score(self):
+        """Calculate website readiness score (0-100)"""
+        score = 0
+        
+        # Basic business info (30 points)
+        if self.business_name: score += 5
+        if hasattr(self, 'business_description') and self.business_description: score += 10
+        if self.business_logo: score += 10
+        if hasattr(self, 'business_hours') and self.business_hours: score += 5
+        
+        # Contact & verification (25 points)
+        if self.email: score += 5
+        if self.phone: score += 5
+        if self.is_verified: score += 15
+        
+        # Address info (15 points)
+        if self.address: score += 5
+        if self.city: score += 5
+        if self.state: score += 5
+        
+        # Additional info (30 points)
+        if self.website_url: score += 5
+        if self.linkedin_url: score += 5
+        
+        # Check if vendor has products (through relationship)
+        try:
+            if hasattr(self, 'products') and self.products:
+                product_count = len(self.products)
+                if product_count >= 1: score += 5
+                if product_count >= 3: score += 10
+                if product_count >= 5: score += 5
+        except:
+            pass  # Handle case where products relationship doesn't exist yet
+        
+        # Update the score in database
+        self.readiness_score = score
+        return score
+    
+    def can_go_live(self):
+        """Check if vendor can go live (minimum requirements)"""
+        current_score = self.calculate_readiness_score()
+        
+        # Minimum requirements for going live
+        has_basic_info = bool(self.business_name and self.email and self.phone)
+        has_minimum_score = current_score >= 40
+        has_subdomain = bool(self.subdomain)
+        
+        return has_basic_info and has_minimum_score and has_subdomain
+    
+    def go_live(self):
+        """Make vendor website live"""
+        if not self.can_go_live():
+            missing_requirements = []
+            
+            if not self.business_name:
+                missing_requirements.append("Business name")
+            if not self.email:
+                missing_requirements.append("Email address")
+            if not self.phone:
+                missing_requirements.append("Phone number")
+            if self.readiness_score < 40:
+                missing_requirements.append("Minimum 40% profile completion")
+            if not self.subdomain:
+                missing_requirements.append("Subdomain setup")
+            
+            return {
+                "success": False,
+                "message": "Cannot go live yet",
+                "missing_requirements": missing_requirements,
+                "current_score": self.readiness_score,
+                "required_score": 40
+            }
+        
+        # Make website live
+        self.website_status = 'live'
+        self.went_live_at = datetime.utcnow()
+        
+        return {
+            "success": True,
+            "message": f"🎉 Your website is now live!",
+            "website_url": self.get_website_url(),
+            "went_live_at": self.went_live_at.isoformat()
+        }
+    
+    def get_next_steps(self):
+        """Get recommended next steps for vendor"""
+        steps = []
+        current_score = self.calculate_readiness_score()
+        
+        # Basic profile completion
+        if not self.business_logo:
+            steps.append("Upload your business logo")
+        
+        if hasattr(self, 'business_description') and not self.business_description:
+            steps.append("Add a business description")
+        
+        if not self.website_url:
+            steps.append("Add your website URL (optional)")
+        
+        # Product/content steps
+        try:
+            if hasattr(self, 'products'):
+                product_count = len(self.products) if self.products else 0
+                if product_count == 0:
+                    steps.append("Add your first product/service")
+                elif product_count < 3:
+                    steps.append("Add more products (recommended: at least 3)")
+        except:
+            steps.append("Add products/services to your catalog")
+        
+        # Verification steps
+        if not self.is_verified:
+            steps.append("Complete business verification")
+        
+        # Go live step
+        if self.can_go_live() and self.website_status != 'live':
+            steps.append("🚀 Ready to go live! Launch your website")
+        elif current_score < 40:
+            steps.append(f"Complete profile to {40 - current_score}% more to go live")
+        
+        return steps
+    
+    def get_dashboard_summary(self):
+        """Get summary info for vendor dashboard"""
+        current_score = self.calculate_readiness_score()
+        
+        return {
+            "website_url": self.get_website_url(),
+            "website_status": self.get_website_status_display(),
+            "domain_type": self.get_domain_type_display(),
+            "readiness_score": current_score,
+            "can_go_live": self.can_go_live(),
+            "next_steps": self.get_next_steps(),
+            "went_live_at": self.went_live_at.isoformat() if self.went_live_at else None,
+            "total_products": len(self.products) if hasattr(self, 'products') and self.products else 0
+        }
+    
+    def update_subdomain_if_needed(self, db_session):
+        """Update subdomain if business name changed"""
+        if not self.subdomain:
+            # Generate subdomain if doesn't exist
+            new_subdomain = self._generate_subdomain_from_business_name(db_session)
+            self.subdomain = new_subdomain
+            self.subdomain_created_at = datetime.utcnow()
+            return new_subdomain
+        return self.subdomain
+    
+    def _generate_subdomain_from_business_name(self, db_session):
+        """Generate subdomain from business name (for existing vendors)"""
+        if not self.business_name:
+            return f"vendor{self.id}"
+        
+        # Clean business name
+        base = re.sub(r'[^a-zA-Z0-9]', '', self.business_name.lower())
+        
+        # Remove common words if too long
+        if len(base) > 15:
+            common_words = ['restaurant', 'food', 'cafe', 'store', 'shop', 'electronics']
+            for word in common_words:
+                base = base.replace(word, '')
+        
+        base = base[:15]
+        if not base:
+            base = f"business{self.id}"
+        
+        # Check for conflicts and resolve
+        subdomain = base
+        counter = 1
+        
+        while True:
+            # Check if subdomain exists
+            existing = db_session.query(Vendor).filter(
+                Vendor.subdomain == subdomain,
+                Vendor.id != self.id  # Exclude current vendor
+            ).first()
+            
+            if not existing:
+                return subdomain
+            
+            # Try with city first
+            if counter == 1 and self.city:
+                city_abbr = self._get_city_abbreviation()
+                subdomain = f"{base}{city_abbr}"
+                counter += 1
+                continue
+            
+            # Try numbered versions
+            subdomain = f"{base}{counter}"
+            counter += 1
+            
+            # Safety break
+            if counter > 100:
+                import uuid
+                return f"{base}{uuid.uuid4().hex[:6]}"
+    
+    def _get_city_abbreviation(self):
+        """Get city abbreviation for subdomain"""
+        if not self.city:
+            return ""
+        
+        city_mappings = {
+            'bangalore': 'blr', 'bengaluru': 'blr',
+            'mumbai': 'mum', 'bombay': 'mum',
+            'delhi': 'del', 'new delhi': 'del',
+            'hyderabad': 'hyd',
+            'chennai': 'che', 'madras': 'che',
+            'kolkata': 'kol', 'calcutta': 'kol',
+            'pune': 'pune', 'ahmedabad': 'amd'
+        }
+        
+        return city_mappings.get(self.city.lower().strip(), self.city.lower()[:3])

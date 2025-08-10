@@ -1,3 +1,4 @@
+# app/services/domain_config.py - FIXED VERSION
 from typing import Dict, List, Optional
 from app.core.config import settings
 import logging
@@ -116,17 +117,47 @@ class DomainConfig:
         )
     
     @classmethod
+    def get_tlds_by_priority(cls) -> List[str]:
+        """✅ MISSING METHOD - Get TLDs ordered by priority (lowest priority number first)"""
+        return sorted(
+            cls.INDIAN_TLD_CONFIG.keys(),
+            key=lambda tld: cls.INDIAN_TLD_CONFIG[tld]["priority"]
+        )
+    
+    @classmethod
     def get_popular_tlds(cls) -> List[str]:
         """Get list of popular TLDs for prioritization"""
         return [tld for tld, config in cls.INDIAN_TLD_CONFIG.items() if config["popular"]]
+    
+    @classmethod
+    def get_cheapest_tlds(cls) -> List[str]:
+        """Get TLDs ordered by price (cheapest first)"""
+        return sorted(
+            cls.INDIAN_TLD_CONFIG.keys(),
+            key=lambda tld: cls.INDIAN_TLD_CONFIG[tld]["price_inr"]
+        )
+    
+    @classmethod
+    def get_tld_info(cls, tld: str) -> Optional[Dict]:
+        """Get complete information for a specific TLD"""
+        return cls.INDIAN_TLD_CONFIG.get(tld)
+    
+    @classmethod
+    def is_indian_tld(cls, tld: str) -> bool:
+        """Check if TLD is an Indian domain"""
+        indian_tlds = {"in", "co.in", "net.in", "org.in", "firm.in", "gen.in", "ind.in"}
+        return tld.lower() in indian_tlds
     
     @classmethod
     def validate_config(cls) -> Dict[str, bool]:
         """Validate domain service configuration"""
         validation_results = {
             "godaddy_configured": bool(settings.GODADDY_API_KEY and settings.GODADDY_API_SECRET),
-            "domain_settings_configured": bool(settings.DOMAIN_HOSTING_IP and settings.DOMAIN_SETUP_EMAIL),
-            "environment_set": bool(settings.GODADDY_ENVIRONMENT)
+            "domain_settings_configured": bool(
+                getattr(settings, 'DOMAIN_HOSTING_IP', None) and 
+                getattr(settings, 'DOMAIN_SETUP_EMAIL', None)
+            ),
+            "environment_set": bool(getattr(settings, 'GODADDY_ENVIRONMENT', None))
         }
         
         # Log configuration status
@@ -141,10 +172,56 @@ class DomainConfig:
     @classmethod
     def get_environment_info(cls) -> Dict:
         """Get current environment configuration"""
+        godaddy_env = getattr(settings, 'GODADDY_ENVIRONMENT', 'NOT_SET')
+        
         return {
-            "godaddy_environment": settings.GODADDY_ENVIRONMENT,
-            "is_production": settings.GODADDY_ENVIRONMENT == "PRODUCTION",
-            "is_test": settings.GODADDY_ENVIRONMENT == "OTE",
-            "api_endpoint": cls.GODADDY_CONFIG["prod_endpoint"] if settings.GODADDY_ENVIRONMENT == "PRODUCTION" else cls.GODADDY_CONFIG["test_endpoint"],
-            "supported_tlds": len(cls.INDIAN_TLD_CONFIG)
+            "godaddy_environment": godaddy_env,
+            "is_production": godaddy_env == "PRODUCTION",
+            "is_test": godaddy_env == "OTE",
+            "api_endpoint": (
+                cls.GODADDY_CONFIG["prod_endpoint"] 
+                if godaddy_env == "PRODUCTION" 
+                else cls.GODADDY_CONFIG["test_endpoint"]
+            ),
+            "supported_tlds": len(cls.INDIAN_TLD_CONFIG),
+            "total_config_items": len(cls.INDIAN_TLD_CONFIG)
         }
+    
+    @classmethod
+    def get_price_range(cls) -> Dict[str, float]:
+        """Get price range for all TLDs"""
+        prices = [config["price_inr"] for config in cls.INDIAN_TLD_CONFIG.values()]
+        return {
+            "min_price": min(prices),
+            "max_price": max(prices),
+            "average_price": sum(prices) / len(prices)
+        }
+    
+    @classmethod
+    def filter_tlds_by_price(cls, max_price_inr: float) -> List[str]:
+        """Get TLDs under a specific price point"""
+        return [
+            tld for tld, config in cls.INDIAN_TLD_CONFIG.items()
+            if config["price_inr"] <= max_price_inr
+        ]
+    
+    @classmethod
+    def get_recommendations_for_business_type(cls, business_type: str) -> List[str]:
+        """Get TLD recommendations based on business type"""
+        recommendations = {
+            "ecommerce": ["com", "shop", "store", "co.in"],
+            "restaurant": ["com", "in", "co.in", "food"],
+            "services": ["com", "in", "co.in", "service"],
+            "tech": ["com", "in", "co", "tech"],
+            "education": ["org.in", "com", "in"],
+            "nonprofit": ["org.in", "org", "com"],
+            "personal": ["in", "com", "co.in"],
+            "blog": ["com", "in", "online"],
+            "portfolio": ["com", "in", "co.in", "site"]
+        }
+        
+        # Get recommendations for business type, fallback to general recommendations
+        tld_list = recommendations.get(business_type.lower(), ["com", "in", "co.in"])
+        
+        # Filter to only include TLDs we support
+        return [tld for tld in tld_list if tld in cls.INDIAN_TLD_CONFIG]
