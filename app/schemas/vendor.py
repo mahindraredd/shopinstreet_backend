@@ -4,8 +4,14 @@
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from datetime import datetime
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, Numeric
+from sqlalchemy.sql import func
+from datetime import datetime
+import re
+import logging
+logger = logging.getLogger(__name__)
 
-# Existing schemas (keep these)
+
 class VendorRegister(BaseModel):
     business_name: str
     business_category: str
@@ -148,3 +154,19 @@ class VendorRiskAssessment(BaseModel):
     compliance_status: str
     risk_factors: list[str]
     recommendations: list[str]
+
+from pydantic import BaseModel
+from typing import List, Optional
+
+class WebsiteInfo(BaseModel):
+    subdomain: Optional[str]
+    website_url: Optional[str]
+    status: str
+    readiness_score: Optional[int] = 0
+    next_steps: Optional[List[str]] = []
+
+class EnhancedRegistrationResponse(BaseModel):
+    message: str
+    vendor_id: int
+    website_info: WebsiteInfo
+    success: bool

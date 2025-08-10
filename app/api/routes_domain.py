@@ -1,9 +1,10 @@
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, logger
 from sqlalchemy.orm import Session
 from typing import List, Dict
 
 from app.db.deps import get_db, get_current_vendor
+from app.services.domain_config import DomainConfig
 from app.services.indian_domain_service import IndianDomainService
 from app.models.vendor import Vendor
 from app.models.domain import DomainOrder, VendorDomain
@@ -395,3 +396,196 @@ async def domain_service_health():
         "registrar": "godaddy",
         "using_mock": domain_service.using_mock
     }
+
+    # Add these endpoints to your app/api/routes_domain.py
+
+@router.get("/search-real-pricing/{business_name}")
+async def search_domains_with_real_pricing(
+    business_name: str,
+    max_results: int = Query(12, ge=1, le=20),
+    vendor: Vendor = Depends(get_current_vendor),
+    db: Session = Depends(get_db)
+):
+    """Search for domains with real-time GoDaddy pricing"""
+    
+    try:
+        if not business_name or len(business_name.strip()) < 2:
+            raise HTTPException(status_code=400, detail="Business name must be at least 2 characters")
+        
+        # Generate suggestions with real pricing
+        result = await domain_service.generate_domain_suggestions_with_real_pricing(
+            business_name=business_name.strip(),
+            max_suggestions=max_results
+        )
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Real pricing search failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+
+@router.get("/real-price/{domain}")
+async def get_real_domain_price(
+    domain: str,
+    vendor: Vendor = Depends(get_current_vendor)
+):
+    """Get real-time price for a specific domain"""
+    
+    try:
+        from app.services.real_pricing_service import RealPricingService
+        
+        # Validate domain format
+        if not domain or '.' not in domain:
+            raise HTTPException(status_code=400, detail="Invalid domain format")
+        
+        pricing_service = RealPricingService()
+        result = pricing_service.get_real_domain_price(domain.lower().strip())
+        
+        if not result.get("success", True):
+            raise HTTPException(status_code=400, detail=result.get("error", "Price check failed"))
+        
+        return {
+            "success": True,
+            "domain": domain,
+            "pricing": result,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Real price check failed for {domain}: {e}")
+        raise HTTPException(status_code=500, detail=f"Price check failed: {str(e)}")
+
+@router.post("/bulk-real-pricing")
+async def get_bulk_real_pricing(
+    domains: List[str],
+    vendor: Vendor = Depends(get_current_vendor)
+):
+    """Get real-time pricing for multiple domains"""
+    
+    try:
+        from app.services.real_pricing_service import RealPricingService
+        
+        if not domains or len(domains) == 0:
+            raise HTTPException(status_code=400, detail="No domains provided")
+        
+        if len(domains) > 20:
+            raise HTTPException(status_code=400, detail="Maximum 20 domains per request")
+        
+        # Clean domain list
+        clean_domains = [d.lower().strip() for d in domains if d and '.' in d]
+        
+        if not clean_domains:
+            raise HTTPException(status_code=400, detail="No valid domains provided")
+        
+        pricing_service = RealPricingService()
+        results = await pricing_service.get_bulk_real_prices(clean_domains)
+        
+        # Calculate summary statistics
+        total_domains = len(results)
+        available_domains = sum(1 for r in results.values() if r.get("available", False))
+        real_prices = sum(1 for r in results.values() if r.get("source") == "godaddy_api")
+        
+        return {
+            "success": True,
+            "results": results,
+            "summary": {
+                "total_domains": total_domains,
+                "available_domains": available_domains,
+                "real_api_prices": real_prices,
+                "accuracy_percentage": round((real_prices / total_domains) * 100, 1)
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Bulk pricing failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Bulk pricing failed: {str(e)}")
+
+@router.get("/pricing-comparison/{domain}")
+async def compare_static_vs_real_pricing(
+    domain: str,
+    vendor: Vendor = Depends(get_current_vendor)
+):
+    """Compare static pricing vs real GoDaddy pricing for analysis"""
+    
+    try:
+        from app.services.real_pricing_service import RealPricingService
+        
+        # Get static price
+        tld = domain.split('.')[-1]
+        static_config = DomainConfig.get_tld_pricing(tld)
+        static_price = static_config["price_inr"]
+        
+        # Get real price
+        pricing_service = RealPricingService()
+        real_price_info = pricing_service.get_real_domain_price(domain)
+        
+        comparison = {
+            "domain": domain,
+            "static_pricing": {
+                "price_inr": static_price,
+                "source": "domain_config.py",
+                "last_updated": "static"
+            },
+            "real_pricing": real_price_info,
+            "comparison": {}
+        }
+        
+        if real_price_info.get("success") and real_price_info.get("source") == "godaddy_api":
+            real_price = real_price_info["price_inr"]
+            difference = real_price - static_price
+            percentage_diff = (difference / static_price) * 100
+            
+            comparison["comparison"] = {
+                "price_difference_inr": round(difference, 2),
+                "percentage_difference": round(percentage_diff, 1),
+                "static_is_higher": static_price > real_price,
+                "real_is_higher": real_price > static_price,
+                "recommendation": (
+                    "Static price too low - risk of loss" if static_price < real_price 
+                    else "Static price higher - may lose customers" if static_price > real_price * 1.2
+                    else "Static price reasonable"
+                )
+            }
+        
+        return comparison
+        
+    except Exception as e:
+        logger.error(f"Pricing comparison failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Comparison failed: {str(e)}")
+
+@router.get("/pricing-health")
+async def check_pricing_service_health():
+    """Health check for real pricing service"""
+    
+    try:
+        from app.services.real_pricing_service import RealPricingService
+        
+        pricing_service = RealPricingService()
+        
+        # Test with a known domain
+        test_result = pricing_service.get_real_domain_price("example.com")
+        
+        return {
+            "service": "Real Pricing Service",
+            "status": "operational",
+            "godaddy_api": "connected" if test_result.get("source") == "godaddy_api" else "fallback",
+            "exchange_rate": pricing_service.exchange_rate,
+            "markup_percentage": pricing_service.markup_percentage * 100,
+            "last_test": datetime.now().isoformat(),
+            "test_domain_result": test_result
+        }
+        
+    except Exception as e:
+        return {
+            "service": "Real Pricing Service", 
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }

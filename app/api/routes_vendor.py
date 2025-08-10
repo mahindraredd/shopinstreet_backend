@@ -18,36 +18,99 @@ from app.crud import vendor as crud_vendor
 from app.models.vendor import Vendor
 from app.core.security import create_access_token, hash_password, verify_password
 import logging
+from app.services.vendor_website_service import VendorWebsiteService
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 @router.post("/register")
 def register_vendor(data: VendorRegister, db: Session = Depends(get_db)):
+    """
+    Enhanced vendor registration with automatic subdomain creation
+    """
+    
+    # Step 1: Check if vendor already exists (existing logic)
     if crud_vendor.get_vendor_by_email_or_phone(db, data.email, data.phone):
         raise HTTPException(status_code=400, detail="Vendor already exists.")
 
-    new_vendor = Vendor(
-        business_name=data.business_name,
-        business_category=data.business_category,
-        address=data.address,
-        city=data.city,
-        state=data.state,
-        pincode=data.pincode,
-        country=data.country,
-        owner_name=data.owner_name,
-        email=data.email,
-        phone=data.phone,
-        password_hash=hash_password(data.password),
-        verification_type=data.verification_type,
-        verification_number=data.verification_number,
-        website_url=data.website_url,
-        linkedin_url=data.linkedin_url,
-        business_logo=data.business_logo,
-        is_verified=False
-    )
+    try:
+        # Step 2: Create vendor 
+        new_vendor = Vendor(
+            business_name=data.business_name,
+            business_category=data.business_category,
+            address=data.address,
+            city=data.city,
+            state=data.state,
+            pincode=data.pincode,
+            country=data.country,
+            owner_name=data.owner_name,
+            email=data.email,
+            phone=data.phone,
+            password_hash=hash_password(data.password),
+            verification_type=data.verification_type,
+            verification_number=data.verification_number,
+            website_url=data.website_url,
+            linkedin_url=data.linkedin_url,
+            business_logo=data.business_logo,
+            is_verified=False,
+            #  Set subdomain fields defaults
+            domain_type='free',
+            website_status='draft',
+            readiness_score=0
+        )
 
-    created_vendor = crud_vendor.create_vendor(db, new_vendor)
-    return {"message": "Vendor registered successfully. Pending verification."}
+        # Step 3: Save vendor to database
+        created_vendor = crud_vendor.create_vendor(db, new_vendor)
+        
+        # Step 4: 🆕 NEW - Generate subdomain automatically
+        try:
+            # Generate unique subdomain
+            subdomain = created_vendor.update_subdomain_if_needed(db)
+            
+            # Calculate initial readiness score
+            initial_score = created_vendor.calculate_readiness_score()
+            
+            # Commit subdomain and score updates
+            db.commit()
+            
+            logger.info(f"Vendor {created_vendor.id} registered with subdomain: {subdomain}")
+            
+            # Step 5: Return enhanced response with website info
+            return {
+                "message": "Vendor registered successfully! Your website is being set up.",
+                "vendor_id": created_vendor.id,
+                "website_info": {
+                    "subdomain": subdomain,
+                    "website_url": created_vendor.get_website_url(),
+                    "status": created_vendor.get_website_status_display(),
+                    "readiness_score": initial_score,
+                    "next_steps": created_vendor.get_next_steps()
+                },
+                "success": True
+            }
+            
+        except Exception as subdomain_error:
+            # If subdomain creation fails, still allow registration to succeed
+            logger.warning(f"Subdomain creation failed for vendor {created_vendor.id}: {subdomain_error}")
+            
+            return {
+                "message": "Vendor registered successfully. Website setup will be completed shortly.",
+                "vendor_id": created_vendor.id,
+                "website_info": {
+                    "subdomain": None,
+                    "website_url": None,
+                    "status": "Setting up...",
+                    "note": "Your website will be available shortly"
+                },
+                "success": True
+            }
+            
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Vendor registration failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
 
 @router.post("/login")
 def login_vendor(data: VendorLogin, db: Session = Depends(get_db)):
@@ -271,3 +334,98 @@ def get_risk_assessment(
 def test():
     """Test endpoint to verify vendor route is working"""
     return {"message": "Enterprise vendor route is working"}
+
+# 🆕 NEW: Add this endpoint to get website info after registration
+@router.get("/website-info")
+def get_vendor_website_info(
+    db: Session = Depends(get_db),
+    vendor: Vendor = Depends(get_current_vendor)
+):
+    """Get vendor's website information"""
+    
+    try:
+        # Ensure vendor has subdomain
+        if not vendor.subdomain:
+            vendor.update_subdomain_if_needed(db)
+            db.commit()
+        
+        # Calculate current readiness
+        current_score = vendor.calculate_readiness_score()
+        db.commit()
+        
+        return {
+            "success": True,
+            "website_info": {
+                "subdomain": vendor.subdomain,
+                "website_url": vendor.get_website_url(),
+                "domain_type": vendor.get_domain_type_display(),
+                "status": vendor.get_website_status_display(),
+                "readiness_score": current_score,
+                "can_go_live": vendor.can_go_live(),
+                "next_steps": vendor.get_next_steps(),
+                "went_live_at": vendor.went_live_at.isoformat() if vendor.went_live_at else None
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting website info for vendor {vendor.id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get website info: {str(e)}")
+
+# 🆕 NEW: Add this endpoint to make website go live
+@router.post("/go-live")
+def make_website_live(
+    db: Session = Depends(get_db),
+    vendor: Vendor = Depends(get_current_vendor)
+):
+    """Make vendor website live"""
+    
+    try:
+        # Attempt to go live
+        result = vendor.go_live()
+        
+        if result["success"]:
+            db.commit()
+            logger.info(f"Vendor {vendor.id} website went live: {vendor.get_website_url()}")
+            
+            return {
+                "success": True,
+                "message": result["message"],
+                "website_url": result["website_url"],
+                "went_live_at": result["went_live_at"]
+            }
+        else:
+            return {
+                "success": False,
+                "message": result["message"],
+                "missing_requirements": result.get("missing_requirements", []),
+                "current_score": result.get("current_score", 0),
+                "required_score": result.get("required_score", 40)
+            }
+            
+    except Exception as e:
+        logger.error(f"Error making vendor {vendor.id} go live: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to go live: {str(e)}")
+
+# 🆕 NEW: Add this endpoint to update readiness score
+@router.post("/update-readiness")
+def update_readiness_score(
+    db: Session = Depends(get_db),
+    vendor: Vendor = Depends(get_current_vendor)
+):
+    """Update vendor readiness score"""
+    
+    try:
+        score = vendor.calculate_readiness_score()
+        db.commit()
+        
+        return {
+            "success": True,
+            "readiness_score": score,
+            "can_go_live": vendor.can_go_live(),
+            "next_steps": vendor.get_next_steps(),
+            "website_status": vendor.get_website_status_display()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error updating readiness for vendor {vendor.id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update readiness: {str(e)}")
