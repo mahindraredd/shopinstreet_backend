@@ -1,6 +1,7 @@
 # app/api/routes_vendor.py
 # Enterprise-grade vendor routes with encryption and compliance
 
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.db.deps import get_db, get_current_vendor
@@ -26,12 +27,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 @router.post("/register")
-def register_vendor(data: VendorRegister, db: Session = Depends(get_db)):
+async def register_vendor(data: VendorRegister, db: Session = Depends(get_db)):
     """
-    Enhanced vendor registration with automatic subdomain creation
+    Enhanced vendor registration with automatic subdomain and template deployment
     """
     
-    # Step 1: Check if vendor already exists (existing logic)
+    # Step 1: Check if vendor already exists
     if crud_vendor.get_vendor_by_email_or_phone(db, data.email, data.phone):
         raise HTTPException(status_code=400, detail="Vendor already exists.")
 
@@ -55,54 +56,82 @@ def register_vendor(data: VendorRegister, db: Session = Depends(get_db)):
             linkedin_url=data.linkedin_url,
             business_logo=data.business_logo,
             is_verified=False,
-            #  Set subdomain fields defaults
             domain_type='free',
-            website_status='draft',
+            website_status='setting_up',  # Changed from 'draft'
             readiness_score=0
         )
 
         # Step 3: Save vendor to database
         created_vendor = crud_vendor.create_vendor(db, new_vendor)
         
-        # Step 4: 🆕 NEW - Generate subdomain automatically
+        # Step 4: Generate subdomain
+        subdomain = created_vendor.update_subdomain_if_needed(db)
+        db.commit()
+        
+        # Step 5: 🆕 DEPLOY TEMPLATE AUTOMATICALLY
         try:
-            # Generate unique subdomain
-            subdomain = created_vendor.update_subdomain_if_needed(db)
+            from app.services.vendor_template_service import VendorTemplateService
+            template_service = VendorTemplateService()
             
-            # Calculate initial readiness score
-            initial_score = created_vendor.calculate_readiness_score()
+            logger.info(f"Starting automatic template deployment for vendor {created_vendor.id}")
             
-            # Commit subdomain and score updates
-            db.commit()
+            # Deploy template in background
+            deployment_result = await template_service.deploy_default_template_for_vendor(
+                db=db, 
+                vendor=created_vendor
+            )
             
-            logger.info(f"Vendor {created_vendor.id} registered with subdomain: {subdomain}")
-            
-            # Step 5: Return enhanced response with website info
-            return {
-                "message": "Vendor registered successfully! Your website is being set up.",
-                "vendor_id": created_vendor.id,
-                "website_info": {
-                    "subdomain": subdomain,
-                    "website_url": created_vendor.get_website_url(),
-                    "status": created_vendor.get_website_status_display(),
-                    "readiness_score": initial_score,
-                    "next_steps": created_vendor.get_next_steps()
-                },
-                "success": True
-            }
-            
-        except Exception as subdomain_error:
-            # If subdomain creation fails, still allow registration to succeed
-            logger.warning(f"Subdomain creation failed for vendor {created_vendor.id}: {subdomain_error}")
+            if deployment_result["success"]:
+                logger.info(f"Template deployed successfully for vendor {created_vendor.id}")
+                
+                return {
+                    "message": "Vendor registered successfully! Your website is now live.",
+                    "vendor_id": created_vendor.id,
+                    "website_info": {
+                        "subdomain": subdomain,
+                        "website_url": created_vendor.get_website_url(),
+                        "status": "Live",
+                        "template_deployed": True,
+                        "template_id": deployment_result["template_id"],
+                        "readiness_score": created_vendor.calculate_readiness_score(),
+                        "next_steps": [
+                            "Customize your website content",
+                            "Add your products/services", 
+                            "Upload your business logo",
+                            "Complete your profile"
+                        ]
+                    },
+                    "success": True
+                }
+            else:
+                logger.warning(f"Template deployment failed for vendor {created_vendor.id}: {deployment_result.get('error')}")
+                
+                return {
+                    "message": "Vendor registered successfully. Website setup in progress.",
+                    "vendor_id": created_vendor.id,
+                    "website_info": {
+                        "subdomain": subdomain,
+                        "website_url": created_vendor.get_website_url(),
+                        "status": "Setting up...",
+                        "template_deployed": False,
+                        "error": deployment_result.get("error"),
+                        "note": "Template deployment will be retried automatically"
+                    },
+                    "success": True
+                }
+                
+        except Exception as template_error:
+            logger.error(f"Template deployment failed for vendor {created_vendor.id}: {template_error}")
             
             return {
                 "message": "Vendor registered successfully. Website setup will be completed shortly.",
                 "vendor_id": created_vendor.id,
                 "website_info": {
-                    "subdomain": None,
-                    "website_url": None,
+                    "subdomain": subdomain,
+                    "website_url": created_vendor.get_website_url(),
                     "status": "Setting up...",
-                    "note": "Your website will be available shortly"
+                    "template_deployed": False,
+                    "note": "Template will be deployed automatically"
                 },
                 "success": True
             }
@@ -112,6 +141,48 @@ def register_vendor(data: VendorRegister, db: Session = Depends(get_db)):
         logger.error(f"Vendor registration failed: {e}")
         raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
 
+
+# Add new endpoint to manually deploy template if needed
+@router.post("/deploy-template/{vendor_id}")
+async def deploy_template_manually(
+    vendor_id: int,
+    template_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_vendor: Vendor = Depends(get_current_vendor)
+):
+    """Manually deploy template to vendor subdomain"""
+    
+    # Security check - only allow vendor to deploy to their own subdomain
+    if current_vendor.id != vendor_id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    try:
+        from app.services.vendor_template_service import VendorTemplateService
+        template_service = VendorTemplateService()
+        
+        deployment_result = await template_service.deploy_default_template_for_vendor(
+            db=db,
+            vendor=current_vendor,
+            template_id=template_id
+        )
+        
+        if deployment_result["success"]:
+            return {
+                "success": True,
+                "message": "Template deployed successfully",
+                "website_url": current_vendor.get_website_url(),
+                "template_id": deployment_result["template_id"]
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Template deployment failed",
+                "error": deployment_result.get("error")
+            }
+            
+    except Exception as e:
+        logger.error(f"Manual template deployment failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Deployment failed: {str(e)}")
 @router.post("/login")
 def login_vendor(data: VendorLogin, db: Session = Depends(get_db)):
     vendor = crud_vendor.get_vendor_by_email(db, data.email)
